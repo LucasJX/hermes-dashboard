@@ -1,0 +1,1560 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hermes Dashboard</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦞</text></svg>" />
+</head>
+<body>
+
+<!-- ─── App Shell (flex column) ──────────────────────────────────────── -->
+<div class="app-shell">
+
+<!-- ─── Top Dock Bar (nav dock + controls dock, same style) ─────────────── -->
+<div class="topdock-wrap">
+  <!-- Left: Navigation Dock -->
+  <div class="topdock" id="topdock">
+    <div class="dk active" data-page="dashboard">
+      <span class="dk-icon">🏠</span>
+      <span class="dk-label">主页</span>
+    </div>
+    <div class="dk" data-page="sessions">
+      <span class="dk-icon">💬</span>
+      <span class="dk-label">会话</span>
+    </div>
+    <div class="dk" data-page="tokens">
+      <span class="dk-icon">📊</span>
+      <span class="dk-label">配额</span>
+    </div>
+    <div class="dk" data-page="channels">
+      <span class="dk-icon">📡</span>
+      <span class="dk-label">频道</span>
+    </div>
+    <div class="dk" data-page="models">
+      <span class="dk-icon">🤖</span>
+      <span class="dk-label">模型</span>
+    </div>
+    <div class="dk" data-page="skills">
+      <span class="dk-icon">⚙️</span>
+      <span class="dk-label">技能</span>
+    </div>
+    <div class="dk" data-page="cron">
+      <span class="dk-icon">⏰</span>
+      <span class="dk-label">定时</span>
+    </div>
+    <div class="dk" data-page="logs">
+      <span class="dk-icon">📋</span>
+      <span class="dk-label">日志</span>
+    </div>
+  </div>
+
+  <!-- Right: Controls Dock (theme + avatar) -->
+  <div class="topdock-right">
+    <div id="theme-toggle" title="切换主题" style="display:flex;align-items:center;padding:5px 10px;border-radius:10px;cursor:pointer;color:var(--ink-2);">
+      <span style="font-size:18px;line-height:1;">☀️</span>
+    </div>
+    <div title="Hermes" style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--blue);font-size:14px;cursor:pointer;flex-shrink:0;">
+      🦞
+    </div>
+  </div>
+</div>
+
+<!-- ─── Main Content ─────────────────────────────────────────────── -->
+<main class="page" id="app">
+  <div class="loading"><div class="spinner-lg"></div>加载中…</div>
+</main>
+
+</div><!-- .app-shell -->
+
+<script>
+
+/* ─── State ──────────────────────────────────────────────────────── */
+const API = '/api';
+let currentPage = 'dashboard';
+let cache = {};
+let toastTimer = null;
+
+/* ─── Source Labels (shared) ──────────────────────────────────────── */
+const srcLabels = {
+  weixin: 'Weixin', telegram: 'Telegram', discord: 'Discord',
+  slack: 'Slack', whatsapp: 'WhatsApp', mattermost: 'Mattermost',
+  cron: 'Cron', tui: 'TUI', unknown: '未知'
+};
+
+/* ─── Util ────────────────────────────────────────────────────────── */
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const api = path => fetch(API + path).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+
+function timeAgo(iso) {
+  if (!iso) return '—';
+  try {
+    const d = new Date(iso.endsWith('Z') ? iso : iso.replace(' ', 'T'));
+    const diff = (Date.now() - d.getTime()) / 1000;
+    if (diff < 5) return '刚刚';
+    if (diff < 60) return Math.floor(diff) + 's 前';
+    if (diff < 3600) return Math.floor(diff / 60) + 'm 前';
+    if (diff < 86400) return Math.floor(diff / 3600) + 'h 前';
+    return Math.floor(diff / 86400) + 'd 前';
+  } catch { return '—'; }
+}
+
+function fmtNum(n) {
+  if (n == null) return '—';
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+}
+
+function fmtCost(cny) {
+  if (cny == null) return '—';
+  return '¥' + Number(cny).toFixed(2);
+}
+
+function getBarColor(used, limit) {
+  if (!limit) return 'bar-green';
+  const pct = used / limit * 100;
+  if (pct < 50) return 'bar-green';
+  if (pct < 80) return 'bar-orange';
+  return 'bar-red';
+}
+
+function fmtBytes(n) {
+  if (n == null) return '—';
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + ' GB';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + ' MB';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + ' KB';
+  return n + ' B';
+}
+
+function toast(msg, type = 'default') {
+  if (toastTimer) clearTimeout(toastTimer);
+  const old = $('.toast');
+  if (old) old.remove();
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  toastTimer = setTimeout(() => el.remove(), 2500);
+}
+
+function chLogo(source) {
+  const map = { telegram: 'telegram', weixin: 'weixin', wechat: 'weixin', discord: 'discord', slack: 'slack', whatsapp: 'whatsapp', mattermost: 'mattermost', cron: 'telegram', tui: 'telegram' };
+  return 'ch-logo ch-logo-' + (map[source?.toLowerCase()] || 'default');
+}
+function chEmoji(source) {
+  const map = { telegram: '✈️', weixin: '💬', wechat: '💬', discord: '🎮', slack: '💼', whatsapp: '📱', mattermost: '💬', cron: '⏰', tui: '🖥️' };
+  return map[source?.toLowerCase()] || '❓';
+}
+function badgeClass(status) {
+  const map = { online: 'badge-online', error: 'badge-error', offline: 'badge-offline', unused: 'badge-unused', unconfigured: 'badge-unconfigured', unknown: 'badge-unknown', reconnecting: 'badge-reconnecting' };
+  return 'badge ' + (map[status] || 'badge-unknown');
+}
+function statusLabel(status) {
+  const map = { online: '在线', error: '错误', offline: '离线', unused: '未用', unconfigured: '未配置', unknown: '未知', reconnecting: '重连中' };
+  return map[status] || status;
+}
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+/* ─── Simple Markdown Renderer ───────────────────────────────────── */
+function renderMarkdown(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+      const escaped = code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      return `<pre><code class="lang-${lang}">${escaped}</code></pre>`;
+    })
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/\n/g, '<br>');
+}
+
+/* ─── Navigation ─────────────────────────────────────────────────── */
+document.querySelector('#topdock').addEventListener('click', e => {
+  const item = e.target.closest('.dk[data-page]');
+  if (!item) return;
+  $$('.dk').forEach(el => el.classList.remove('active'));
+  item.classList.add('active');
+  navigate(item.dataset.page);
+});
+
+function navigate(page) {
+  currentPage = page;
+  sessionStorage.setItem('hermes-page', page); // persist across refresh on mobile
+  window.scrollTo({ top: 0 });
+  switch (page) {
+    case 'dashboard': renderDashboard(); break;
+    case 'channels':  renderChannels();  break;
+    case 'sessions':  renderSessions();  break;
+    case 'tokens':    renderTokens();    break;
+    case 'cron':      renderCron();      break;
+    case 'models':    renderModels();    break;
+    case 'skills':    renderSkills();    break;
+    case 'logs':      renderLogs();      break;
+    default:          renderDashboard();
+  }
+}
+
+/* ─── RENDER: Dashboard ───────────────────────────────────────────── */
+
+async function renderDashboard() {
+  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div>加载中…</div>';
+  try {
+    const [stats, quota] = await Promise.all([api('/stats'), api('/quota')]);
+    cache.stats = stats;
+
+    const totalSessions = stats.total_sessions || 0;
+    const totalMessages = stats.total_messages || 0;
+    const totalTokens   = (stats.total_input_tokens || 0) + (stats.total_output_tokens || 0);
+    const totalCost     = stats.total_cost_cny || 0;
+    const activeCh       = (stats.channels || []).filter(c => c.status === 'online').length;
+    const uptime         = stats.uptime || '—';
+    const weeklyUsedK    = fmtNum(quota.models[0]?.weekly_used ?? 0);
+
+    const recentGroups = {};
+    (stats.recent_sessions || []).forEach(s => {
+      const src = s.source || 'unknown';
+      if (!recentGroups[src]) recentGroups[src] = [];
+      recentGroups[src].push(s);
+    });
+    const srcOrder = ['weixin','telegram','discord','slack','whatsapp','mattermost','cron','tui','cli','unknown'];
+    const sortedSrcs = Object.keys(recentGroups).sort((a, b) => {
+      const ai = srcOrder.indexOf(a), bi = srcOrder.indexOf(b);
+      return (ai===-1?99:ai) - (bi===-1?99:bi);
+    });
+
+    const heroIcons = { sessions: '💬', messages: '📨', tokens: '🔥', channels: '📡' };
+
+    // Only show sources that have at least one truly active session
+    // Active sessions: each session individually displayed (not grouped by source)
+    const allRecentSessions = [...(stats.recent_sessions || [])]
+      .filter(s => isTrulyActive(s))
+      .sort((a, b) => new Date(b.started_at) - new Date(a.started_at))
+      .slice(0, 20);
+
+    const srcEmoji = { weixin:'💬',telegram:'✈️',discord:'🎮',slack:'💼',whatsapp:'📱',mattermost:'💬',cron:'⏰',tui:'⌨️',cli:'>',unknown:'🌐' };
+
+    const activeSessionsHTML = allRecentSessions.length
+      ? allRecentSessions.map(s => {
+          const src = s.source || 'unknown';
+          const emoji = srcEmoji[src] || '💬';
+          const topic = s.topic || s.session_id || src;
+          const tokens = (s.input_tokens || 0) + (s.output_tokens || 0);
+          const isActive = isTrulyActive(s);
+          return `<div class="as-item${isActive ? ' active' : ''}" data-session-id="${s.id}">
+            <div class="as-item-icon"><div style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:16px;background:var(--surface-2);border-radius:8px;flex-shrink:0">${emoji}</div></div>
+            <div class="as-item-body">
+              <div class="as-item-topic">${topic}</div>
+              <div class="as-item-meta">
+                <span class="as-item-src">${srcLabels[src]||src}</span>
+                <span class="as-item-sep">·</span>
+                <span class="as-item-tokens">${fmtNum(tokens)} tokens</span>
+              </div>
+            </div>
+            <div class="as-item-time">${timeAgo(s.started_at)}</div>
+          </div>`;
+        }).join('')
+      : '';
+
+  // two-col: 频道状态 + 活跃会话，各占一半，活跃会话在下面
+  const dashboardHTML = `
+      <div class="hero-grid">
+        <div class="hero-card">
+          <div class="hero-card-icon">💬</div>
+          <div class="hero-card-label">会话总数</div>
+          <div class="hero-card-value">${fmtNum(totalSessions)}</div>
+          <div class="hero-card-sub"><strong>${fmtNum(totalMessages)}</strong> 条消息</div>
+        </div>
+        <div class="hero-card">
+          <div class="hero-card-icon">📨</div>
+          <div class="hero-card-label">消息总数</div>
+          <div class="hero-card-value">${fmtNum(totalMessages)}</div>
+          <div class="hero-card-sub"><strong>${totalSessions}</strong> 个会话</div>
+        </div>
+        <div class="hero-card">
+          <div class="hero-card-icon">🔥</div>
+          <div class="hero-card-label">Token 消耗</div>
+          <div class="hero-card-value">${fmtNum(totalTokens)}</div>
+          <div class="hero-card-sub"><strong>${fmtCost(totalCost)}</strong> · 本周已用 ${weeklyUsedK}</div>
+        </div>
+        <div class="hero-card">
+          <div class="hero-card-icon">📡</div>
+          <div class="hero-card-label">活跃渠道</div>
+          <div class="hero-card-value">${activeCh}</div>
+          <div class="hero-card-sub"><strong>${activeCh} 个在线</strong> · ${uptime} 运行</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title-row">
+          <div class="card-title">
+            <span class="card-title-icon">◆</span>
+            <span id="qb-model-title">—</span>
+          </div>
+          <button class="card-action-btn" id="qb-refresh-btn">刷新</button>
+        </div>
+        <div class="qb-body">
+          <div class="qb-bar-row">
+            <span class="qb-bar-label">每轮配额</span>
+            <div class="qb-bar-track"><div class="qb-bar-fill bar-green" id="qb-interval-fill-bar"></div></div>
+            <span class="qb-bar-num" id="qb-interval-num">— / —</span>
+          </div>
+          <div class="qb-bar-row">
+            <span class="qb-bar-label">每周配额</span>
+            <div class="qb-bar-track"><div class="qb-bar-fill bar-green" id="qb-weekly-fill-bar"></div></div>
+            <span class="qb-bar-num" id="qb-weekly-num">— / —</span>
+          </div>
+          <div class="qb-bar-row">
+            <span class="qb-bar-label">每月配额</span>
+            <div class="qb-bar-track"><div class="qb-bar-fill bar-green" id="qb-monthly-fill-bar"></div></div>
+            <span class="qb-bar-num" id="qb-monthly-num">— / —</span>
+          </div>
+          <div class="qb-detail-grid">
+            <div class="qb-detail-cell"><div class="qb-dc-label">本周剩余</div><div class="qb-dc-val" id="qb-dc-weekly-remain">—</div></div>
+            <div class="qb-detail-cell"><div class="qb-dc-label">每轮上限</div><div class="qb-dc-val" id="qb-dc-interval-total">—</div></div>
+            <div class="qb-detail-cell"><div class="qb-dc-label">每轮剩余</div><div class="qb-dc-val" id="qb-dc-interval-remain">—</div></div>
+            <div class="qb-detail-cell"><div class="qb-dc-label">每轮刷新</div><div class="qb-dc-val" id="qb-dc-interval-reset">—</div></div>
+            <div class="qb-detail-cell"><div class="qb-dc-label">每周刷新</div><div class="qb-dc-val" id="qb-dc-weekly-reset">—</div></div>
+            <div class="qb-detail-cell"><div class="qb-dc-label">每月刷新</div><div class="qb-dc-val" id="qb-dc-monthly-reset">—</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card-row-2col">
+        <div class="card card-col">
+          <div class="card-title-row">
+            <div class="card-title"><span class="card-title-icon">◆</span>频道状态</div>
+            <button class="card-action-btn" onclick="navigate('channels')">管理</button>
+          </div>
+          <div class="ch-list">
+          ${(stats.channels||[]).map(c => {
+            return `<div class="rc-item">
+              <div class="ch-logo ${chLogo(c.name)}" style="width:32px;height:32px;font-size:16px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0">${chEmoji(c.name)}</div>
+              <span class="rc-name">${(srcLabels[c.name]||c.name)}</span>
+              <span class="status-dot status-dot-${c.status}"></span>
+              <span class="rc-status">${statusLabel(c.status)}</span>
+              <span class="rc-time">${c.last_active?timeAgo(c.last_active):'从未'}</span>
+            </div>`;
+          }).join('')}
+          </div>
+        </div>
+
+        <div class="card card-col">
+          <div class="card-title-row">
+            <div class="card-title"><span class="card-title-icon">◆</span>活跃会话</div>
+            <button class="card-action-btn" onclick="navigate('sessions')">查看全部</button>
+          </div>
+          <div class="as-list">${activeSessionsHTML || '<div class="empty"><div class="empty-icon">💬</div><div class="empty-text">暂无会话</div></div>'}</div>
+        </div>
+      </div>`;
+    $('#app').innerHTML = dashboardHTML;
+
+    $$('.rc-item[data-src]').forEach(el => {
+      el.addEventListener('click', () => navigate('sessions'));
+    });
+
+    // ── Quota card: populate first model data ──
+    // Auto-detect default model from hermes config
+    const activeModels = quota.models.filter(m => m.interval_total > 0 || m.weekly_total > 0);
+    const modelNames = { 'MiniMax-M*': 'AI 对话', 'music-2.6': '音乐生成', 'music-cover': '音乐封面', 'lyrics_generation': '歌词生成', 'coding-plan-vlm': '代码模型', 'coding-plan-search': '搜索模型' };
+    const modelIcons = { 'MiniMax-M*': '🤖', 'music-2.6': '🎵', 'music-cover': '🎤', 'lyrics_generation': '📝', 'coding-plan-vlm': '💻', 'coding-plan-search': '🔍' };
+
+    // Default model: MiniMax-M* (main chat model)
+    const defaultModel = activeModels.find(m => m.name === 'MiniMax-M*') || activeModels[0];
+
+    function updateQuotaCard(m) {
+      if (!m) return;
+      // Model title
+      $('#qb-model-title').textContent = (modelNames[m.name] || m.name) + ' ' + (modelIcons[m.name] || '');
+      // Progress bar colors based on usage percentage
+      const iPct = m.interval_total ? (m.interval_used / m.interval_total) * 100 : 0;
+      const wPct = m.weekly_total ? (m.weekly_used / m.weekly_total) * 100 : 0;
+      const moPct = m.monthly_total ? (m.monthly_used / m.monthly_total) * 100 : wPct;
+      const setBar = (el, pct) => {
+        el.style.width = Math.min(100, pct) + '%';
+        el.className = 'qb-bar-fill ' + getBarColor(pct, 100);
+      };
+      setBar($('#qb-interval-fill-bar'), iPct);
+      setBar($('#qb-weekly-fill-bar'), wPct);
+      setBar($('#qb-monthly-fill-bar'), moPct);
+      // Numbers
+      $('#qb-interval-num').textContent = fmtNum(m.interval_used) + ' / ' + fmtNum(m.interval_total);
+      $('#qb-weekly-num').textContent = fmtNum(m.weekly_used) + ' / ' + fmtNum(m.weekly_total);
+      $('#qb-monthly-num').textContent = fmtNum(m.monthly_used) + ' / ' + fmtNum(m.monthly_total);
+      // Detail cells
+      $('#qb-dc-weekly-remain').textContent = fmtNum(m.weekly_remains ?? 0);
+      $('#qb-dc-interval-total').textContent = fmtNum(m.interval_total ?? 0);
+      $('#qb-dc-interval-remain').textContent = fmtNum(m.interval_remains ?? 0);
+      $('#qb-dc-interval-reset').textContent = quota.per_round_reset_str || '—';
+      $('#qb-dc-weekly-reset').textContent = quota.weekly_reset_str || '—';
+      $('#qb-dc-monthly-reset').textContent = quota.monthly_reset_str || '—';
+    }
+
+    // Init with default model
+    updateQuotaCard(defaultModel);
+
+    // Refresh button
+    $('#qb-refresh-btn')?.addEventListener('click', () => {
+      const btn = $('#qb-refresh-btn');
+      btn.textContent = '刷新中…';
+      btn.disabled = true;
+      fetch('/api/stats?t=' + Date.now()).then(r => r.json()).then(data => {
+        if (data.quota) { quota = data.quota; updateQuotaCard(defaultModel); }
+        btn.textContent = '刷新';
+        btn.disabled = false;
+      }).catch(() => {
+        btn.textContent = '刷新';
+        btn.disabled = false;
+        toast('刷新失败', 'error');
+      });
+    });
+
+  } catch (e) {
+    $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">加载失败: ${e.message}</div></div>`;
+  }
+}
+
+
+/* ─── RENDER: Channels ───────────────────────────────────────────── */
+async function renderChannels() {
+  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div></div>';
+  try {
+    const data = await api('/channels');
+    const statusOrder = { online: 0, error: 1, reconnecting: 2, offline: 3, unused: 4, unconfigured: 5, unknown: 6 };
+    const sorted = [...(data.channels || [])].sort((a, b) => statusOrder[a.status] - statusOrder[b.status]);
+
+    $('#app').innerHTML = `
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title-row" style="margin-bottom:14px">
+          <div class="card-title"><span class="card-title-icon">◆</span>频道</div>
+          <span style="font-size:12px;color:var(--ink-3)">${data.channels.length} 个已配置平台</span>
+        </div>
+        <div class="ch-grid">
+          ${sorted.map(c => `
+            <div class="ch-card">
+              <div class="ch-top">
+                <div class="${chLogo(c.name)}">${chEmoji(c.name)}</div>
+                <span class="ch-name">${c.name}</span>
+                <span class="ch-status-dot ${c.status === 'online' ? 'online' : c.status === 'error' ? 'error' : 'offline'}">${statusLabel(c.status)}</span>
+              </div>
+              <div class="ch-body">
+                <div style="font-size:12px;color:var(--ink-3)">${c.last_active ? '最后活跃: ' + timeAgo(c.last_active) : '从未活跃'}</div>
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>`;
+  } catch (e) {
+    $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
+  }
+}
+
+
+
+/* ─── RENDER: Sessions ────────────────────────────────────────────── */
+async function renderSessions() {
+  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div></div>';
+  try {
+    const data = await api('/sessions?limit=200');
+    cache.sessions = data.sessions || [];
+    renderSpPage(cache.sessions);
+  } catch (e) {
+    $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
+  }
+}
+
+// ── Sessions page: stats header + filter pills + channel cards ──────
+function renderSpPage(sessions) {
+  const groups = {};
+  sessions.forEach(s => {
+    const src = s.source || 'unknown';
+    if (!groups[src]) groups[src] = [];
+    groups[src].push(s);
+  });
+
+  const srcOrder = ['weixin','telegram','discord','slack','whatsapp','mattermost','cron','tui','cli','unknown'];
+  const sorted = Object.keys(groups).sort((a,b) => {
+    const ai=srcOrder.indexOf(a), bi=srcOrder.indexOf(b);
+    return (ai===-1?99:ai)-(bi===-1?99:bi);
+  });
+
+  const activeCount   = sessions.filter(s => isTrulyActive(s)).length;
+  const totalMsgs    = sessions.reduce((t,s) => t+(s.message_count||0), 0);
+  const totalTokens  = sessions.reduce((t,s) => t+(s.input_tokens||0)+(s.output_tokens||0), 0);
+  const totalCost    = sessions.reduce((t,s) => t+(s.cost||0), 0);
+
+  $('#app').innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title-row" style="margin-bottom:14px">
+        <div class="card-title"><span class="card-title-icon">◆</span>会话</div>
+      </div>
+      <div class="sp-stats-card">
+        <div class="sp-stat"><div class="sp-stat-value">${sessions.length}</div><div class="sp-stat-label">会话总数</div></div>
+        <div class="sp-stat"><div class="sp-stat-value green">${activeCount}</div><div class="sp-stat-label">进行中</div></div>
+        <div class="sp-stat"><div class="sp-stat-value">${fmtNum(totalMsgs)}</div><div class="sp-stat-label">消息总数</div></div>
+        <div class="sp-stat"><div class="sp-stat-value accent">${fmtNum(totalTokens)}</div><div class="sp-stat-label">Token 总量</div></div>
+        <div class="sp-stat"><div class="sp-stat-value">${fmtCost(totalCost)}</div><div class="sp-stat-label">费用合计</div></div>
+      </div>
+    </div>
+    <div id="sp-list"></div>`;
+
+  renderSpFlat(sessions);
+}
+
+// ── Flat session list (no channel grouping) ─────────────────────────
+function renderSpFlat(sessions) {
+  const sorted = [...sessions].sort((a, b) =>
+    new Date(b.started_at) - new Date(a.started_at)
+  );
+
+  $('#sp-list').innerHTML = sorted.map(s => buildSpSessionRow(s)).join('');
+
+  $$('.sp-session-row').forEach(el => {
+    el.addEventListener('click', () => openSpDetail(el.dataset.session, el));
+  });
+}
+
+// ── Session row ─────────────────────────────────────────────────────
+function isTrulyActive(s) {
+  if (!s.ended_at) {
+    // Session without ended_at: only active if started within last 2 hours
+    try {
+      const start = new Date(s.started_at.endsWith('Z') ? s.started_at : s.started_at.replace(' ', 'T'));
+      return (Date.now() - start.getTime()) < 2 * 60 * 60 * 1000;
+    } catch { return false; }
+  }
+  return false;
+}
+
+function buildSpSessionRow(s) {
+  const active = isTrulyActive(s);
+  return `
+    <div class="sp-session-row${active ? ' active' : ''}" data-session="${s.id}">
+      <div class="sp-row-icon">
+        <div style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:16px;background:var(--surface-2);border-radius:8px;flex-shrink:0">${chEmoji(s.source)}</div>
+      </div>
+      <div class="sp-row-main">
+        <div class="sp-row-id">${s.id}</div>
+        <div class="sp-row-meta">
+          <span class="sp-row-src">${srcLabels[s.source]||s.source||'—'}</span>
+          <span class="dot">·</span>
+          <span>${s.model || '—'}</span>
+          <span class="dot">·</span>
+          <span>${fmtNum(s.message_count||0)} 条</span>
+          <span class="dot">·</span>
+          <span>${fmtNum((s.input_tokens||0)+(s.output_tokens||0))} tokens</span>
+        </div>
+      </div>
+      <div class="sp-row-cost"><strong>¥${(s.cost||0).toFixed(2)}</strong></div>
+      <div class="sp-row-time">${timeAgo(s.started_at)}</div>
+    </div>`;
+}
+
+// ── Session detail (inline inside sp-sessions) ─────────────────────
+async function openSpDetail(sessionId, rowEl) {
+  // Toggle if same session
+  const existing = $(`[data-sp-detail="${sessionId}"]`);
+  if (existing) { existing.remove(); return; }
+
+  // Remove any other open detail first
+  $$('[data-sp-detail]').forEach(el => el.remove());
+
+  try {
+    const data = await api(`/sessions/${sessionId}`);
+    const msgs = data.messages || [];
+
+    const detailHTML = `
+      <div class="sp-detail-drawer" data-sp-detail="${sessionId}">
+        <div class="sp-detail-meta">
+          <span class="sp-detail-meta-item">🤖 ${escapeHtml(data.model||'—')}</span>
+          <span class="sp-detail-meta-item">💬 ${data.message_count||0} 条</span>
+          <span class="sp-detail-meta-item">📥 ${fmtNum(data.input_tokens||0)} in</span>
+          <span class="sp-detail-meta-item">📤 ${fmtNum(data.output_tokens||0)} out</span>
+          <span class="sp-detail-meta-item">💰 ¥${(data.cost||0).toFixed(2)}</span>
+          <span class="sp-detail-meta-item">⏱ ${timeAgo(data.started_at)}</span>
+          ${data.ended_at
+            ? '<span class="badge badge-offline">已结束</span>'
+            : '<span class="badge badge-active">进行中</span>'}
+        </div>
+        <div class="sp-detail-messages">
+          ${msgs.length ? msgs.map(m => `
+            <div class="msg ${m.role==='user'?'msg-user':'msg-assistant'}">
+              <div class="msg-role">${m.role==='user'?'User':m.role==='assistant'?'Assistant':m.role}</div>
+              <div class="msg-content">${renderMarkdown(m.content||'')}</div>
+              ${m.content ? `<button class="msg-copy" data-copy="${escapeHtml(m.content).replace(/"/g,'&quot;')}">📋</button>` : ''}
+            </div>`).join('') : '<div class="text-muted text-sm" style="padding:12px">暂无消息内容</div>'}
+        </div>
+      </div>`;
+
+    rowEl.insertAdjacentHTML('afterend', detailHTML);
+
+    $$('.msg-copy').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const text = btn.getAttribute('data-copy').replace(/&quot;/g,'"');
+        navigator.clipboard.writeText(text).then(() => toast('已复制','success')).catch(() => toast('复制失败','error'));
+      });
+    });
+  } catch (e) {
+    toast('加载会话详情失败: ' + e.message, 'error');
+  }
+}
+
+
+
+
+/* ─── RENDER: Tokens ──────────────────────────────────────────────── */
+async function renderTokens() {
+  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div></div>';
+  try {
+    const [stats, sessionsData, quota] = await Promise.all([api('/stats'), api('/sessions?limit=200'), api('/quota')]);
+    const sessions = sessionsData.sessions || [];
+
+    // Model names and icons for quota display
+    const modelNames = { 'MiniMax-M*': 'AI 对话', 'music-2.6': '音乐生成', 'music-cover': '音乐封面', 'lyrics_generation': '歌词生成', 'coding-plan-vlm': '代码模型', 'coding-plan-search': '搜索模型' };
+    const modelIcons = { 'MiniMax-M*': '🤖', 'music-2.6': '🎵', 'music-cover': '🎤', 'lyrics_generation': '📝', 'coding-plan-vlm': '💻', 'coding-plan-search': '🔍' };
+    const activeModels = (quota.models || []).filter(m => m.interval_total > 0 || m.weekly_total > 0);
+    const defaultModel = activeModels.find(m => m.name === 'MiniMax-M*') || activeModels[0];
+    const modelTitleStr = defaultModel ? (modelNames[defaultModel.name] || defaultModel.name) + ' ' + (modelIcons[defaultModel.name] || '') : '';
+
+    // Model distribution
+    const modelMap = {};
+    sessions.forEach(s => {
+      const m = s.model || 'unknown';
+      if (!modelMap[m]) modelMap[m] = { in: 0, out: 0, cost: 0 };
+      modelMap[m].in += s.input_tokens || 0;
+      modelMap[m].out += s.output_tokens || 0;
+      modelMap[m].cost += s.cost || 0;
+    });
+
+    const modelColors = ['#0066cc', '#34c759', '#ff9f0a', '#ff3b30', '#af52de', '#5ac8fa', '#ffcc00'];
+    const modelEntries = Object.entries(modelMap).sort((a, b) => (b[1].in+b[1].out) - (a[1].in+a[1].out));
+    const totalTokens = modelEntries.reduce((s, [, v]) => s + v.in + v.out, 0);
+
+    // Source distribution
+    const sourceMap = {};
+    sessions.forEach(s => {
+      const src = s.source || 'unknown';
+      if (!sourceMap[src]) sourceMap[src] = { count: 0, in: 0, out: 0 };
+      sourceMap[src].count++;
+      sourceMap[src].in += s.input_tokens || 0;
+      sourceMap[src].out += s.output_tokens || 0;
+    });
+
+    // 30-day trend
+    const dayMap = {};
+    sessions.forEach(s => {
+      if (!s.started_at) return;
+      const day = s.started_at.slice(0, 10);
+      if (!dayMap[day]) dayMap[day] = { in: 0, out: 0, msgs: 0 };
+      dayMap[day].in += s.input_tokens || 0;
+      dayMap[day].out += s.output_tokens || 0;
+      dayMap[day].msgs += s.message_count || 0;
+    });
+
+    const last30days = [];
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      const key = d.toISOString().slice(0, 10);
+      last30days.push({ day: key, ...(dayMap[key] || { in: 0, out: 0, msgs: 0 }) });
+    }
+
+    const maxDayTokens = Math.max(1, ...last30days.map(d => d.in + d.out));
+    const days = stats.system_started
+      ? Math.max(1, Math.round((Date.now() - new Date(stats.system_started).getTime()) / 86400000))
+      : 1;
+
+    // Pie chart SVG (filter out 'unknown')
+    const pieData = modelEntries.filter(([name]) => name !== 'unknown').slice(0, 7).map(([name, v], i) => {
+      const pct = totalTokens ? Math.round((v.in + v.out) / totalTokens * 100) : 0;
+      return { name, ...v, pct, color: modelColors[i % modelColors.length] };
+    });
+
+    const pieTotal = pieData.reduce((s, d) => s + d.in + d.out, 0);
+    let cumPct = 0;
+    const pieSlices = pieData.map(d => {
+      const start = cumPct;
+      cumPct += (d.in + d.out) / pieTotal * 100;
+      const startRad = start / 100 * 2 * Math.PI - Math.PI / 2;
+      const endRad = cumPct / 100 * 2 * Math.PI - Math.PI / 2;
+      const x1 = 40 + 35 * Math.cos(startRad), y1 = 40 + 35 * Math.sin(startRad);
+      const x2 = 40 + 35 * Math.cos(endRad), y2 = 40 + 35 * Math.sin(endRad);
+      const large = (cumPct - start) > 50 ? 1 : 0;
+      return `<path d="M40,40 L${x1.toFixed(2)},${y1.toFixed(2)} A35,35 0 ${large},1 ${x2.toFixed(2)},${y2.toFixed(2)} Z" fill="${d.color}" />`;
+    });
+
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth();
+    const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate();
+
+    const monthStart = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
+
+    const monthDays = [];
+    for (let i = 1; i <= daysInMonth; i++) {
+      const d = new Date(currentYear, currentMonth, i);
+      const key = d.toISOString().slice(0, 10);
+      monthDays.push({ day: key, dayNum: i, ...(dayMap[key] || { in: 0, out: 0, msgs: 0 }) });
+    }
+
+    // ── Trend chart: input + output both shown, with legend ──────────────────
+    const fmtK = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'K' : n;
+    const W = 760, H = 160, PAD_L = 8, PAD_R = 56, PAD_T = 16, PAD_B = 28;
+    const chartW = W - PAD_L - PAD_R, chartH = H - PAD_T - PAD_B;
+    const stepX = chartW / (daysInMonth - 1 || 1);
+    const maxIn  = Math.max(1, ...monthDays.filter(d => d.in  > 0).map(d => d.in));
+    const maxOut = Math.max(1, ...monthDays.filter(d => d.out > 0).map(d => d.out));
+    const maxVal = Math.max(maxIn, maxOut);
+
+    const buildLine = (getVal) => {
+      if (monthDays.length < 2) return '';
+      const pts = monthDays.map((d, i) => ({
+        x: PAD_L + i * stepX,
+        y: PAD_T + chartH - (getVal(d) / maxVal) * chartH
+      }));
+      let d = `M${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const [x1, y1] = [pts[i].x, pts[i].y];
+        const [x2, y2] = [pts[i+1].x, pts[i+1].y];
+        const [px0, py0] = i > 0 ? [pts[i-1].x, pts[i-1].y] : [x1, y1];
+        const [px1, py1] = i + 2 < pts.length ? [pts[i+2].x, pts[i+2].y] : [x2, y2];
+        d += ` C${(x1 + (x2 - px0)/6).toFixed(1)},${(y1 + (y2 - py0)/6).toFixed(1)} ${(x2 - (px1 - x1)/6).toFixed(1)},${(y2 - (py1 - y1)/6).toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
+      }
+      return d;
+    };
+
+    const lineIn  = buildLine(d => d.in);
+    const lineOut = buildLine(d => d.out);
+    const areaIn  = lineIn  + ` L${PAD_L + chartW},${PAD_T + chartH} Z`;
+    const areaOut = lineOut + ` L${PAD_L + chartW},${PAD_T + chartH} Z`;
+
+    const yLabels = [
+      { v: maxVal, y: PAD_T },
+      { v: maxVal * 0.5, y: PAD_T + chartH * 0.5 },
+      { v: 0, y: PAD_T + chartH },
+    ];
+    const yAxis = yLabels.map(({ v, y }) =>
+      `<text x="${W - PAD_R + 4}" y="${(y + 4).toFixed(1)}" class="axis-label" text-anchor="start">${fmtK(v)}</text>`
+    ).join('');
+    const gridLines = yLabels.map(({ y }) =>
+      `<line x1="${PAD_L}" y1="${y.toFixed(1)}" x2="${PAD_L + chartW}" y2="${y.toFixed(1)}" stroke="var(--ink-4)" stroke-width="0.5" stroke-dasharray="3,3"/>`
+    ).join('');
+    const xLabelDays = monthDays.map((d, i) => ({ i, dayNum: d.dayNum }))
+      .filter(({ i, dayNum }) => i === 0 || i === monthDays.length - 1 || (dayNum % 5 === 0));
+    const xAxis = xLabelDays.map(({ i, dayNum }) => {
+      const x = PAD_L + i * stepX;
+      return `<text x="${x.toFixed(1)}" y="${H - 4}" class="axis-label" text-anchor="middle">${dayNum}日</text>`;
+    }).join('');
+
+    const barSection = monthDays.length > 0
+      ? `<svg id="trend-svg" viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px;overflow:visible">
+          <defs>
+            <linearGradient id="areaGradIn" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#0066cc" stop-opacity="0.3"/>
+              <stop offset="100%" stop-color="#0066cc" stop-opacity="0.04"/>
+            </linearGradient>
+            <linearGradient id="areaGradOut" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#e07b39" stop-opacity="0.3"/>
+              <stop offset="100%" stop-color="#e07b39" stop-opacity="0.04"/>
+            </linearGradient>
+          </defs>
+          ${gridLines}
+          <path d="${areaIn}"  fill="url(#areaGradIn)" />
+          <path d="${areaOut}" fill="url(#areaGradOut)" />
+          <path d="${lineIn}"  fill="none" stroke="#0066cc" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+          <path d="${lineOut}" fill="none" stroke="#e07b39" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+          ${yAxis}
+          ${xAxis}
+        </svg>`
+      : '<div class="text-muted text-sm">本月暂无数据</div>';
+
+    const barLegend = monthDays.length > 0
+      ? `<div style="display:flex;gap:16px;margin-top:6px;padding:0 2px">
+           <span style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-3)">
+             <svg width="20" height="2"><line x1="0" y1="1" x2="20" y2="1" stroke="#0066cc" stroke-width="2"/></svg>输入 Token
+           </span>
+           <span style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-3)">
+             <svg width="20" height="2"><line x1="0" y1="1" x2="20" y2="1" stroke="#e07b39" stroke-width="2"/></svg>输出 Token
+           </span>
+         </div>`
+      : '';
+
+
+    $('#app').innerHTML = `
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title-row" style="margin-bottom:14px">
+          <div class="card-title"><span class="card-title-icon">◆</span>${modelTitleStr ? modelTitleStr + ' ' : ''}Token 分析</div>
+          <span style="font-size:12px;color:var(--ink-3)">${days} 天累计</span>
+        </div>
+        <div class="hero-grid">
+          <div class="hero-card"><div class="hero-label">输入 Token</div><div class="hero-value">${fmtNum(stats.total_input_tokens)}</div><div class="hero-sub">${totalTokens ? Math.round(stats.total_input_tokens / (stats.total_input_tokens + stats.total_output_tokens) * 100) + '%' : '—'}</div></div>
+          <div class="hero-card"><div class="hero-label">输出 Token</div><div class="hero-value">${fmtNum(stats.total_output_tokens)}</div><div class="hero-sub">${totalTokens ? Math.round(stats.total_output_tokens / (stats.total_input_tokens + stats.total_output_tokens) * 100) + '%' : '—'}</div></div>
+          <div class="hero-card"><div class="hero-label">预估费用</div><div class="hero-value">${fmtCost(stats.total_cost_cny)}</div><div class="hero-sub">日均 ${fmtCost(stats.total_cost_cny / days)}</div></div>
+          <div class="hero-card"><div class="hero-label">日均 Token</div><div class="hero-value">${fmtNum(Math.round((stats.total_input_tokens + stats.total_output_tokens) / days))}</div><div class="hero-sub">日均消息 ${fmtNum(Math.round(sessions.reduce((s, x) => s + (x.message_count||0), 0) / days))}</div></div>
+        </div>
+      </div>
+
+      ${defaultModel ? `
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title-row" style="margin-bottom:14px">
+          <div class="card-title"><span class="card-title-icon">◆</span>${modelTitleStr} 配额</div>
+          <span id="qb-model-title" style="font-size:12px;color:var(--ink-3)"></span>
+        </div>
+        <div class="qb-bar-row">
+          <span class="qb-bar-label">每轮配额</span>
+          <div class="qb-bar-track"><div class="qb-bar-fill ${getBarColor(defaultModel.interval_used, defaultModel.interval_total)}" style="width:${Math.min(100, (defaultModel.interval_total ? defaultModel.interval_used / defaultModel.interval_total * 100 : 0))}%"></div></div>
+          <span class="qb-bar-num">${fmtNum(defaultModel.interval_used)} / ${fmtNum(defaultModel.interval_total)}</span>
+        </div>
+        <div class="qb-bar-row">
+          <span class="qb-bar-label">每周配额</span>
+          <div class="qb-bar-track"><div class="qb-bar-fill ${getBarColor(defaultModel.weekly_used, defaultModel.weekly_total)}" style="width:${Math.min(100, (defaultModel.weekly_total ? defaultModel.weekly_used / defaultModel.weekly_total * 100 : 0))}%"></div></div>
+          <span class="qb-bar-num">${fmtNum(defaultModel.weekly_used)} / ${fmtNum(defaultModel.weekly_total)}</span>
+        </div>
+        <div class="qb-bar-row">
+          <span class="qb-bar-label">每月配额</span>
+          <div class="qb-bar-track"><div class="qb-bar-fill ${getBarColor(defaultModel.monthly_used, defaultModel.monthly_total)}" style="width:${Math.min(100, (defaultModel.monthly_total ? defaultModel.monthly_used / defaultModel.monthly_total * 100 : 0))}%"></div></div>
+          <span class="qb-bar-num">${fmtNum(defaultModel.monthly_used)} / ${fmtNum(defaultModel.monthly_total)}</span>
+        </div>
+      </div>
+      ` : ''}
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title-row" style="margin-bottom:14px">
+          <div class="card-title"><span class="card-title-icon">◆</span>本月趋势</div>
+          <span style="font-size:12px;color:var(--ink-3)">每日 Token</span>
+        </div>
+        ${barSection}
+        ${barLegend}
+        <div style="display:flex;justify-content:space-between;padding:4px 2px 0">
+          ${(() => {
+            const first = monthDays.find(d => d.in + d.out > 0);
+            const lastDay = new Date().getDate();
+            return `<span style="font-size:11px;color:var(--ink-3)">${first ? first.dayNum + '日' : '—'}</span><span style="font-size:11px;color:var(--ink-3)">${lastDay}日</span>`;
+          })()}
+        </div>
+      </div>
+
+      <div class="card-row-2col" style="margin-bottom:16px">
+        <div class="card-col">
+          <div class="card" style="height:100%">
+            <div class="card-title-row" style="margin-bottom:12px">
+              <div class="card-title"><span class="card-title-icon">◆</span>模型分布</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              ${pieData.length ? pieData.map(d => `
+                <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--surface-2);border-radius:10px">
+                  <div style="width:10px;height:10px;border-radius:50%;flex-shrink:0;background:${d.color}"></div>
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${d.name}</div>
+                    <div style="font-size:11px;color:var(--ink-3);margin-top:1px">${fmtNum(d.in+d.out)} tokens</div>
+                  </div>
+                  <span style="font-size:12px;font-weight:600;color:var(--ink-2)">${d.pct}%</span>
+                </div>`).join('') : '<div style="text-align:center;padding:16px 0;color:var(--ink-3);font-size:13px">暂无数据</div>'}
+            </div>
+          </div>
+        </div>
+        <div class="card-col">
+          <div class="card" style="height:100%">
+            <div class="card-title-row" style="margin-bottom:12px">
+              <div class="card-title"><span class="card-title-icon">◆</span>来源分布</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              ${Object.entries(sourceMap).sort((a,b) => (b[1].in+b[1].out)-(a[1].in+a[1].out)).length ? Object.entries(sourceMap).sort((a,b) => (b[1].in+b[1].out)-(a[1].in+a[1].out)).map(([src, v]) => `
+                <div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--surface-2);border-radius:10px">
+                  <div style="width:28px;height:28px;border-radius:7px;background:var(--surface-1);display:flex;align-items:center;justify-content:center;font-size:13px;flex-shrink:0">${chEmoji(src)}</div>
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${srcLabels[src] || src}</div>
+                    <div style="font-size:11px;color:var(--ink-3);margin-top:1px">${fmtNum(v.count)} 会话</div>
+                  </div>
+                  <span style="font-size:12px;font-weight:600;color:var(--ink-2)">${fmtNum(v.in+v.out)}</span>
+                </div>`).join('') : '<div style="text-align:center;padding:16px 0;color:var(--ink-3);font-size:13px">暂无数据</div>'}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title-row" style="margin-bottom:12px">
+          <div class="card-title"><span class="card-title-icon">◆</span>每日明细</div>
+          <span style="font-size:12px;color:var(--ink-3)">${daysInMonth} 天</span>
+        </div>
+        <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
+        <table style="width:100%;min-width:500px;border-collapse:collapse;font-size:12px;table-layout:fixed">
+          <colgroup>
+            <col style="width:90px">
+            <col style="width:70px">
+            <col style="width:70px">
+            <col style="width:60px">
+            <col style="min-width:120px">
+          </colgroup>
+          <thead><tr style="border-bottom:1px solid var(--border)">
+            <th style="text-align:left;padding:8px 10px;color:var(--ink-3);font-weight:500;white-space:nowrap">日期</th>
+            <th style="text-align:right;padding:8px 10px;color:var(--ink-3);font-weight:500">输入</th>
+            <th style="text-align:right;padding:8px 10px;color:var(--ink-3);font-weight:500">输出</th>
+            <th style="text-align:right;padding:8px 10px;color:var(--ink-3);font-weight:500">消息</th>
+            <th style="text-align:left;padding:8px 10px;color:var(--ink-3);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">模型汇总</th>
+          </tr></thead>
+          <tbody id="daily-table"></tbody>
+        </table>
+        </div>
+      </div>`;
+
+    // Daily table — group by model per day
+    const dayModelMap = {};
+    sessions.forEach(s => {
+      if (!s.started_at) return;
+      const day = s.started_at.slice(0, 10);
+      const model = s.model || 'unknown';
+      if (!dayModelMap[day]) dayModelMap[day] = {};
+      if (!dayModelMap[day][model]) dayModelMap[day][model] = { in: 0, out: 0 };
+      dayModelMap[day][model].in += s.input_tokens || 0;
+      dayModelMap[day][model].out += s.output_tokens || 0;
+    });
+
+    const recentDays = monthDays.filter(d => d.in + d.out > 0).slice(-14).reverse();
+    $('#daily-table').innerHTML = recentDays.length > 0
+      ? recentDays.map(d => {
+          const dayModels = dayModelMap[d.day] || {};
+          const topModels = Object.entries(dayModels)
+            .filter(([m]) => m !== 'unknown')
+            .sort((a, b) => (b[1].in+b[1].out) - (a[1].in+a[1].out))
+            .slice(0, 3)
+            .map(([m, v]) => `${m}: ${fmtNum(v.in+v.out)}`);
+          const modelSummary = topModels.length > 0 ? topModels.join(' · ') : '—';
+          return `<tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:7px 10px;text-align:left;white-space:nowrap;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis">${d.day}</td>
+            <td style="padding:7px 10px;text-align:right;color:var(--ink-2)">${fmtNum(d.in)}</td>
+            <td style="padding:7px 10px;text-align:right;color:var(--ink-2)">${fmtNum(d.out)}</td>
+            <td style="padding:7px 10px;text-align:right;color:var(--ink-2)">${fmtNum(d.msgs)}</td>
+            <td style="padding:7px 10px;text-align:left;color:var(--ink-3);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${modelSummary}</td>
+          </tr>`;
+        }).join('')
+      : '<tr><td colspan="5" style="padding:12px;text-align:center;color:var(--ink-3);font-size:13px">本月暂无数据</td></tr>';
+
+  } catch (e) {
+    $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
+  }
+}
+
+
+
+/* ─── RENDER: Cron ───────────────────────────────────────────────── */
+async function renderCron() {
+  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div></div>';
+  try {
+    const data = await api('/cron');
+    cache.cron = data.jobs || [];
+    renderCronList(cache.cron);
+  } catch (e) {
+    $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
+  }
+}
+
+function renderCronList(jobs) {
+  $('#app').innerHTML = `
+    <div class="card">
+      <div class="card-title-row">
+        <div class="card-title"><span class="card-title-icon">⏰</span>Cron 任务</div>
+        <button class="btn btn-primary btn-sm" id="btn-new-cron">+ 新建任务</button>
+      </div>
+      <div id="cron-list" style="margin-top:12px">
+        ${jobs.length ? jobs.map(j => buildCronCardHTML(j)).join('') : `
+          <div class="empty"><div class="empty-icon">⏰</div><div class="empty-text">暂无定时任务</div></div>`}
+      </div>
+    </div>`;
+
+  $$('.cron-card').forEach(card => {
+    card.querySelectorAll('.btn[data-action]').forEach(btn => {
+      btn.addEventListener('click', async e => {
+        e.stopPropagation();
+        const id = card.dataset.id;
+        const action = btn.dataset.action;
+        try {
+          if (action === 'delete') {
+            if (!confirm('确认删除此任务？')) return;
+            const r = await fetch(`${API}/cron/${id}`, { method: 'DELETE' }).then(r => r.json());
+            if (r.ok) { toast('已删除', 'success'); renderCron(); } else toast('删除失败: ' + (r.error || ''), 'error');
+          } else {
+            const r = await fetch(`${API}/cron/${id}/${action}`, { method: 'POST' }).then(r => r.json());
+            if (r.ok) { toast(action === 'pause' ? '已暂停' : action === 'resume' ? '已恢复' : '已触发', 'success'); renderCron(); }
+            else toast('操作失败: ' + (r.error || ''), 'error');
+          }
+        } catch (e) { toast(e.message, 'error'); }
+      });
+    });
+  });
+
+  $('#btn-new-cron').addEventListener('click', () => showModal('cron-create'));
+}
+
+function buildCronCardHTML(j) {
+  const status = j.enabled === false ? 'paused' : 'active';
+  return `
+    <div class="cron-card" data-id="${j.id}">
+      <div class="cron-header">
+        <div>
+          <div class="cron-name">${escapeHtml(j.name || j.id)}</div>
+          <div class="cron-schedule">${escapeHtml(j.schedule || j.next_run || '—')}</div>
+        </div>
+        <div class="cron-actions">
+          <span class="${badgeClass(status === 'active' ? 'online' : 'paused')}">${status === 'active' ? '运行中' : '已暂停'}</span>
+          ${status === 'active'
+            ? `<button class="btn btn-secondary btn-sm" data-action="pause">⏸</button>`
+            : `<button class="btn btn-success btn-sm" data-action="resume">▶️</button>`}
+          <button class="btn btn-secondary btn-sm" data-action="run">▶ 立即执行</button>
+          <button class="btn btn-danger btn-sm" data-action="delete">🗑</button>
+        </div>
+      </div>
+      <div class="cron-meta">
+        ${j.next_run ? `<span>下次: ${escapeHtml(j.next_run)}</span>` : ''}
+        ${j.last_run ? `<span>上次: ${escapeHtml(j.last_run)}</span>` : ''}
+        ${j.repeat ? `<span>重复: ${escapeHtml(typeof j.repeat === 'object' ? (j.repeat.completed !== undefined ? `已执行 ${j.repeat.completed} 次` : JSON.stringify(j.repeat)) : String(j.repeat))}</span>` : ''}
+        ${j.deliver ? `<span>投递: ${escapeHtml(j.deliver)}</span>` : ''}
+      </div>
+      ${j.prompt ? `<div class="text-sm text-muted mt-2" style="font-size:12px;line-height:1.5;background:none">${escapeHtml(j.prompt).slice(0, 120)}${j.prompt.length > 120 ? '…' : ''}</div>` : ''}
+    </div>`;
+}
+
+
+
+/* ─── RENDER: Models ─────────────────────────────────────────────── */
+async function renderModels() {
+  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div></div>';
+  try {
+    const [provData, modelData] = await Promise.all([api('/providers'), api('/models')]);
+    const providers = provData.providers || [];
+    const models = modelData.models || [];
+    const defaultProv = providers.find(p => p.is_default);
+    const activeProv = providers.find(p => p.status === 'active');
+
+    // Group models by provider
+    const byProvider = {};
+    models.forEach(m => { const prov = m.provider || 'unknown'; if (!byProvider[prov]) byProvider[prov] = []; byProvider[prov].push(m); });
+
+    const provOrder = ['minimax-cn', 'xiaomi', 'openrouter', 'anthropic', 'unknown'];
+    const sortedProvs = Object.keys(byProvider).sort((a, b) => {
+      const ai = provOrder.indexOf(a), bi = provOrder.indexOf(b);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+    });
+
+    const currentModel = activeProv ? byProvider[activeProv.name]?.[0] : defaultProv ? byProvider[defaultProv.name]?.[0] : models[0];
+
+    $('#app').innerHTML = `
+      <div class="card current-model-hero">
+        <div class="cm-hero-icon">🤖</div>
+        <div class="cm-hero-name">${escapeHtml(currentModel?.id || '—')}</div>
+        <div class="cm-hero-provider">via ${escapeHtml(activeProv?.name || defaultProv?.name || '—')}</div>
+        ${activeProv?.base_url ? `<div class="cm-hero-url">${escapeHtml(activeProv.base_url)}</div>` : ''}
+        <div class="cm-hero-tags">
+          ${providers.find(p => p.name === (activeProv?.name || defaultProv?.name))?.is_default ? '<span class="cm-tag">默认</span>' : ''}
+          <span class="cm-tag cm-tag-${providers.find(p => p.name === (activeProv?.name || defaultProv?.name))?.status || 'offline'}">${providers.find(p => p.name === (activeProv?.name || defaultProv?.name))?.status === 'active' ? '在线' : providers.find(p => p.name === (activeProv?.name || defaultProv?.name))?.status === 'error' ? '错误' : '离线'}</span>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title-row" style="margin-bottom:14px">
+          <div class="card-title"><span class="card-title-icon">◆</span>所有模型</div>
+          <span style="font-size:12px;color:var(--ink-3)">${sortedProvs.length} 个 Provider · ${models.length} 个模型</span>
+        </div>
+        ${sortedProvs.map(prov => `
+          <div class="model-provider-section" style="margin-bottom:${sortedProvs.indexOf(prov) < sortedProvs.length - 1 ? '20px' : '0'}">
+            <div class="model-provider-header">
+              <span class="model-provider-dot" style="background:${providers.find(p=>p.name===prov)?.status === 'active' ? '#34c759' : 'var(--ink-3)'}"></span>
+              <span class="model-provider-name">${escapeHtml(prov)}</span>
+            </div>
+            <div class="model-grid">
+              ${(byProvider[prov] || []).map(m => `
+                <div class="model-card-grid" data-model="${escapeHtml(m.id)}" data-provider="${escapeHtml(prov)}">
+                  <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+                    <div style="width:32px;height:32px;border-radius:8px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">${escapeHtml(m.id.charAt(0).toUpperCase())}</div>
+                    <div style="min-width:0;flex:1">
+                      <div class="model-name" style="font-size:14px;font-weight:600">${escapeHtml(m.id)}</div>
+                      ${m.owned_by ? `<div style="font-size:11px;color:var(--ink-3);margin-top:1px">${escapeHtml(m.owned_by)}</div>` : ''}
+                    </div>
+                  </div>
+                  <div style="display:flex;gap:6px;flex-wrap:wrap">
+                    <span style="font-size:11px;color:var(--ink-2);background:var(--surface-2);padding:2px 8px;border-radius:9999px">${escapeHtml(m.provider || prov)}</span>
+                  </div>
+                </div>`).join('')}
+            </div>
+          </div>`).join('')}
+        ${!models.length ? '<div style="text-align:center;padding:32px 0;color:var(--ink-3);font-size:13px">暂无可用模型</div>' : ''}
+      </div>
+
+      <div class="card">
+        <div class="card-title-row" style="margin-bottom:14px">
+          <div class="card-title"><span class="card-title-icon">◆</span>Provider 状态</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          ${providers.length ? providers.map(p => `
+            <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface-2);border-radius:12px" class="prov-row">
+              <div style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:${p.status === 'active' ? '#34c759' : p.status === 'error' ? '#ff3b30' : '#8e8e93'}"></div>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:13px;font-weight:500;color:var(--ink)">${escapeHtml(p.name)}</div>
+                <div style="font-size:11px;color:var(--ink-3);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.base_url || '')}</div>
+              </div>
+              ${p.is_default ? '<span class="badge-active">默认</span>' : ''}
+              <span style="font-size:11px;color:var(--ink-2)">${p.status}</span>
+            </div>`).join('') : '<div style="text-align:center;padding:20px 0;color:var(--ink-3);font-size:13px">暂无 Provider</div>'}
+        </div>
+      </div>`;
+
+    // Add hover states for model cards
+    document.querySelectorAll('.model-card-grid').forEach(card => {
+      card.addEventListener('mouseenter', () => { card.style.transform = 'translateY(-2px)'; card.style.boxShadow = 'var(--shadow-lift)'; card.style.borderColor = 'var(--blue)'; });
+      card.addEventListener('mouseleave', () => { card.style.transform = ''; card.style.boxShadow = ''; card.style.borderColor = ''; });
+    });
+
+  } catch (e) {
+    $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
+  }
+}
+
+
+
+/* ─── RENDER: Skills ─────────────────────────────────────────────── */
+async function renderSkills() {
+  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div></div>';
+  try {
+    const data = await api('/skills');
+    cache.skills = data.skills || [];
+    renderSkillsList(cache.skills);
+  } catch (e) {
+    $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
+  }
+}
+
+const CATEGORY_ICONS = {
+  'AI': '🤖', 'Analysis': '📊', 'Automation': '⚡', 'Communication': '💬',
+  'Database': '🗄️', 'DevTools': '🔧', 'Finance': '💰', 'Fun': '🎮',
+  'Health': '🏥', 'Media': '🎬', 'Monitoring': '📡', 'Network': '🌐',
+  'Productivity': '⚙️', 'Security': '🔒', 'Social': '👥', 'Storage': '📦',
+  'System': '🖥️', 'Utilities': '🔨', 'Web': '🌍', 'Other': '📦',
+  'identity': '🦞', 'autonomous-ai-agents': '🤖', 'creative': '🎨',
+  'data-science': '📊', 'devops': '⚙️', 'diagramming': '📐', 'dogfood': '🔍',
+  'domain': '🌐', 'email': '📧', 'gaming': '🎮', 'gifs': '🖼️',
+  'github': '🐙', 'mcp': '🔌', 'media': '🎬', 'mlops': '🚀',
+  'note-taking': '📝', 'productivity': '⚙️', 'red-teaming': '🛡️',
+  'research': '🔬', 'smart-home': '🏠', 'social-media': '💬',
+  'software-development': '💻', 'yuanbao': '💬', 'apple': '🍎',
+};
+
+const CATEGORY_COLORS = {
+  'AI': '#5856d6', 'Analysis': '#007aff', 'Automation': '#ff9500', 'Communication': '#34c759',
+  'Database': '#ff3b30', 'DevTools': '#8e8e93', 'Finance': '#30b0c7', 'Fun': '#ff2d55',
+  'Health': '#32d74b', 'Media': '#af52de', 'Monitoring': '#5856d6', 'Network': '#007aff',
+  'Productivity': '#ff9500', 'Security': '#ff3b30', 'Social': '#64d2ff', 'Storage': '#ac8e68',
+  'System': '#8e8e93', 'Utilities': '#bfbfbf', 'Web': '#007aff', 'Other': '#c7c7cc',
+  'identity': '#ff2d55', 'autonomous-ai-agents': '#5856d6', 'creative': '#af52de',
+  'data-science': '#007aff', 'devops': '#ff9500', 'diagramming': '#30b0c7', 'dogfood': '#34c759',
+  'domain': '#007aff', 'email': '#34c759', 'gaming': '#ff2d55', 'gifs': '#ff9500',
+  'github': '#24292e', 'mcp': '#8e8e93', 'media': '#af52de', 'mlops': '#5856d6',
+  'note-taking': '#34c759', 'productivity': '#ff9500', 'red-teaming': '#ff3b30',
+  'research': '#5856d6', 'smart-home': '#30b0c7', 'social-media': '#64d2ff',
+  'software-development': '#007aff', 'yuanbao': '#30b0c7', 'apple': '#007aff',
+};
+
+const DEFAULT_ICONS = {
+  'autonomous-ai-agents': '🤖', 'creative': '🎨', 'data-science': '📊',
+  'devops': '⚙️', 'diagramming': '📐', 'dogfood': '🔍', 'domain': '🌐',
+  'email': '📧', 'gaming': '🎮', 'gifs': '🖼️', 'github': '🐙',
+  'mcp': '🔌', 'media': '🎬', 'mlops': '🚀', 'note-taking': '📝',
+  'productivity': '⚙️', 'red-teaming': '🛡️', 'research': '🔬',
+  'smart-home': '🏠', 'social-media': '💬', 'software-development': '💻',
+  'yuanbao': '💬', 'apple': '🍎',
+};
+
+function renderSkillsList(skills) {
+  const byCategory = {};
+  skills.forEach(s => {
+    const cat = s.category || 'Other';
+    if (!byCategory[cat]) byCategory[cat] = [];
+    byCategory[cat].push(s);
+  });
+  const categories = Object.keys(byCategory).sort();
+
+  const categoryHTML = categories.map(cat => {
+    const icon = CATEGORY_ICONS[cat] || '📦';
+    const color = CATEGORY_COLORS[cat] || '#007aff';
+    return `
+    <div class="skill-category-section">
+      <div class="skill-category-header">
+        <span class="skill-category-icon" style="background:${color}20;color:${color}">${icon}</span>
+        <span class="skill-category-label">${escapeHtml(cat)}</span>
+        <span class="skill-category-count">${byCategory[cat].length}</span>
+      </div>
+      <div class="skill-grid">
+        ${byCategory[cat].map(s => {
+          const sIcon = CATEGORY_ICONS[cat] || DEFAULT_ICONS[s.name] || '📦';
+          return `
+          <div class="skill-card" data-name="${escapeHtml(s.name)}" style="--card-accent:${color}">
+            <div class="skill-card-inner">
+              <div class="skill-card-icon" style="background:${color}15;color:${color}">${sIcon}</div>
+              <div class="skill-card-content">
+                <div class="skill-card-name">${escapeHtml(s.name)}</div>
+                <div class="skill-card-desc">${escapeHtml(s.description || '暂无描述')}</div>
+              </div>
+              <div class="skill-card-arrow">›</div>
+            </div>
+          </div>`;}).join('')}
+      </div>
+    </div>`}).join('');
+
+  $('#app').innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title-row" style="margin-bottom:16px">
+        <div class="card-title"><span class="card-title-icon">⚡</span>技能中心</div>
+        <span style="font-size:12px;color:var(--ink-3)">${skills.length} 个技能 · ${categories.length} 个分类</span>
+      </div>
+      <div style="margin-bottom:14px">
+        <input class="form-input" id="skill-search" type="search" placeholder="搜索技能、分类或描述…" style="width:100%" />
+      </div>
+      <div id="skill-content">${categoryHTML}</div>
+      <div class="empty hidden" id="skill-empty">
+        <div class="empty-icon">🔍</div>
+        <div class="empty-text">未找到匹配技能</div>
+      </div>
+    </div>`;
+
+  const attachEvents = () => {
+    $$('.skill-card').forEach(card => {
+      card.addEventListener('click', () => showSkillDetail(card.dataset.name));
+    });
+  };
+
+  attachEvents();
+
+  $('#skill-search').addEventListener('input', e => {
+    const q = e.target.value.toLowerCase();
+    if (!q) {
+      $('#skill-content').innerHTML = categoryHTML;
+      attachEvents();
+      $('#skill-empty').classList.add('hidden');
+      return;
+    }
+    const filtered = skills.filter(s =>
+      s.name.toLowerCase().includes(q) ||
+      (s.description||'').toLowerCase().includes(q) ||
+      (s.category||'').toLowerCase().includes(q)
+    );
+    if (!filtered.length) {
+      $('#skill-content').innerHTML = '';
+      $('#skill-empty').classList.remove('hidden');
+      return;
+    }
+    $('#skill-empty').classList.add('hidden');
+    const filteredByCat = {};
+    filtered.forEach(s => {
+      const cat = s.category || 'Other';
+      if (!filteredByCat[cat]) filteredByCat[cat] = [];
+      filteredByCat[cat].push(s);
+    });
+    const filteredCats = Object.keys(filteredByCat).sort();
+    $('#skill-content').innerHTML = filteredCats.map(cat => {
+      const icon = CATEGORY_ICONS[cat] || '📦';
+      const color = CATEGORY_COLORS[cat] || '#007aff';
+      return `
+        <div class="skill-category-section">
+          <div class="skill-category-header">
+            <span class="skill-category-icon" style="background:${color}20;color:${color}">${icon}</span>
+            <span class="skill-category-label">${escapeHtml(cat)}</span>
+            <span class="skill-category-count">${filteredByCat[cat].length}</span>
+          </div>
+          <div class="skill-grid">
+            ${filteredByCat[cat].map(s => `
+              <div class="skill-card" data-name="${escapeHtml(s.name)}" style="--card-accent:${color}">
+                <div class="skill-card-inner">
+                  <div class="skill-card-icon" style="background:${color}15;color:${color}">${icon}</div>
+                  <div class="skill-card-content">
+                    <div class="skill-card-name">${escapeHtml(s.name)}</div>
+                    <div class="skill-card-desc">${escapeHtml(s.description || '暂无描述')}</div>
+                  </div>
+                  <div class="skill-card-arrow">›</div>
+                </div>
+              </div>`).join('')}
+          </div>
+        </div>`}).join('');
+    attachEvents();
+  });
+}
+
+function showSkillDetail(name) {
+  const skill = (cache.skills || []).find(s => s.name === name);
+  if (!skill) return;
+  const cat = skill.category || 'Other';
+  const icon = CATEGORY_ICONS[cat] || '📦';
+  const color = CATEGORY_COLORS[cat] || '#007aff';
+
+  const overlay = document.createElement('div');
+  overlay.className = 'apple-modal-overlay';
+  overlay.innerHTML = `
+    <div class="apple-modal">
+      <div class="apple-modal-header">
+        <div class="apple-modal-icon" style="background:${color}18;color:${color}">${icon}</div>
+        <div class="apple-modal-title-group">
+          <div class="apple-modal-title">${escapeHtml(skill.name)}</div>
+          <div class="apple-modal-subtitle" style="color:${color}">${escapeHtml(cat)}</div>
+        </div>
+        <button class="apple-modal-close" id="modal-close">×</button>
+      </div>
+      <div class="apple-modal-body">
+        <div class="apple-modal-section">
+          <div class="apple-modal-label">描述</div>
+          <div class="apple-modal-text">${escapeHtml(skill.description || '暂无描述')}</div>
+        </div>
+        <div class="apple-modal-divider"></div>
+        <div class="apple-modal-section">
+          <div class="apple-modal-label">路径</div>
+          <div class="apple-modal-path">${escapeHtml(skill.path || '—')}</div>
+        </div>
+        <div class="apple-modal-divider"></div>
+        <div class="apple-modal-section">
+          <div class="apple-modal-label">分类</div>
+          <div class="apple-modal-tag" style="background:${color}15;color:${color}">${icon} ${escapeHtml(cat)}</div>
+        </div>
+      </div>
+      <div class="apple-modal-footer">
+        <button class="apple-btn apple-btn-secondary" id="modal-cancel">关闭</button>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+
+  // Animate in
+  requestAnimationFrame(() => {
+    overlay.classList.add('active');
+    overlay.querySelector('.apple-modal').classList.add('active');
+  });
+
+  const closeModal = () => {
+    overlay.classList.remove('active');
+    overlay.querySelector('.apple-modal').classList.remove('active');
+    setTimeout(() => overlay.remove(), 350);
+  };
+
+  $('#modal-close').addEventListener('click', closeModal);
+  $('#modal-cancel').addEventListener('click', closeModal);
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+}
+
+
+
+/* ─── RENDER: Logs ───────────────────────────────────────────────── */
+async function renderLogs() {
+  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div></div>';
+  try {
+    const data = await api('/logs?action=list');
+    renderLogsViewer(data.logs || []);
+  } catch (e) {
+    $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
+  }
+}
+
+function renderLogsViewer(logFiles) {
+  let currentFile = logFiles[0]?.name || 'agent.log';
+  let currentLevel = '';
+  let currentKw = '';
+
+  function loadLogs() {
+    const params = new URLSearchParams({ action: 'read', file: currentFile, limit: 300 });
+    if (currentLevel) params.set('level', currentLevel);
+    if (currentKw) params.set('keyword', currentKw);
+    api('/logs?' + params.toString()).then(data => {
+      const lines = data.lines || [];
+      $('#log-content').innerHTML = lines.length
+        ? lines.map(line => {
+            let cls = 'log-line';
+            if (/ERROR|FATAL|exception/i.test(line)) cls += ' log-line-error';
+            else if (/WARN/i.test(line)) cls += ' log-line-warn';
+            else if (/INFO|debug/i.test(line)) cls += ' log-line-info';
+            return `<div class="${cls}">${escapeHtml(line)}</div>`;
+          }).join('')
+        : '<div class="text-muted text-sm" style="padding:12px">无日志内容</div>';
+      $('#log-count').textContent = lines.length + ' 行';
+    }).catch(() => {
+      $('#log-content').innerHTML = '<div class="text-muted text-sm" style="padding:12px">加载失败</div>';
+    });
+  }
+
+  $('#app').innerHTML = `
+    <div class="card log-page-card">
+      <div class="card-title-row">
+        <div class="card-title"><span class="card-title-icon">📋</span>日志</div>
+        <span style="font-size:12px;color:var(--ink-3)">${logFiles.length} 个文件</span>
+      </div>
+      <div class="log-file-list" id="log-file-list" style="margin-top:12px"></div>
+      <div class="log-filter-row">
+        <input id="log-kw" type="search" placeholder="关键词…" style="max-width:200px" />
+        <div class="log-level-filter">
+          <button class="log-level-btn active" data-level="">全部</button>
+          <button class="log-level-btn" data-level="ERROR">ERROR</button>
+          <button class="log-level-btn" data-level="WARN">WARN</button>
+          <button class="log-level-btn" data-level="INFO">INFO</button>
+        </div>
+        <span class="text-xs text-muted" id="log-count"></span>
+      </div>
+      <div class="log-content" id="log-content"><div class="loading text-sm">加载中…</div></div>
+    </div>`;
+
+  $('#log-file-list').innerHTML = logFiles.map(f => `
+    <button class="log-file-btn${f.name === currentFile ? ' active' : ''}" data-file="${escapeHtml(f.name)}">
+      ${escapeHtml(f.name)} <span class="text-muted">(${fmtBytes(f.size)})</span>
+    </button>`).join('');
+
+  $$('.log-file-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      $$('.log-file-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentFile = btn.dataset.file;
+      loadLogs();
+    });
+  });
+
+  $$('.log-level-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      $$('.log-level-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentLevel = btn.dataset.level;
+      loadLogs();
+    });
+  });
+
+  let kwTimer;
+  $('#log-kw').addEventListener('input', e => {
+    clearTimeout(kwTimer);
+    kwTimer = setTimeout(() => { currentKw = e.target.value; loadLogs(); }, 300);
+  });
+
+  loadLogs();
+}
+
+/* ─── MODALS ──────────────────────────────────────────────────────── */
+function showModal(type, extra) {
+  let content = '';
+  if (type === 'cron-create') {
+    const presets = [
+      { label: '每5分钟', value: '*/5 * * * *' },
+      { label: '每小时', value: '0 * * * *' },
+      { label: '每天9点', value: '0 9 * * *' },
+      { label: '每天18点', value: '0 18 * * *' },
+      { label: '每周一', value: '0 9 * * 1' },
+      { label: '每月1号', value: '0 9 1 * *' },
+    ];
+    content = `
+      <div class="modal-header"><h2>新建 Cron 任务</h2><button class="modal-close" id="modal-close">×</button></div>
+      <div class="form-group"><div class="form-label">任务名称</div>
+        <input class="form-input" id="cron-name" type="text" placeholder="可选名称…" /></div>
+      <div class="form-group"><div class="form-label">执行周期 *</div>
+        <input class="form-input" id="cron-schedule" type="text" placeholder="30m / every 2h / 0 9 * * *" />
+        <div class="flex gap-2 mt-2 flex-wrap">${presets.map(p => `<button class="btn btn-secondary btn-sm cron-preset" data-val="${p.value}">${p.label}</button>`).join('')}</div>
+      </div>
+      <div class="form-group"><div class="form-label">任务描述</div>
+        <textarea class="form-textarea" id="cron-prompt" placeholder="任务指令或提示…"></textarea></div>
+      <div class="form-group"><div class="form-label">投递目标</div>
+        <input class="form-input" id="cron-deliver" type="text" placeholder="origin / local / telegram / weixin" /></div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="modal-cancel">取消</button>
+        <button class="btn btn-primary" id="cron-submit">创建</button>
+      </div>`;
+
+  } else if (type === 'skill-detail' && extra) {
+    const skill = (cache.skills || []).find(s => s.name === extra);
+    content = `
+      <div class="modal-header"><h2>${escapeHtml(skill?.name || extra)}</h2><button class="modal-close" id="modal-close">×</button></div>
+      <div class="form-group"><div class="form-label">描述</div>
+        <div class="text-sm" style="color:var(--ink-2)">${escapeHtml(skill?.description || '暂无描述')}</div></div>
+      <div class="form-group"><div class="form-label">路径</div>
+        <div class="text-mono text-sm">${escapeHtml(skill?.path || '—')}</div></div>
+      <div class="modal-footer"><button class="btn btn-secondary" id="modal-cancel">关闭</button></div>`;
+  }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `<div class="modal">${content}</div>`;
+  document.body.appendChild(overlay);
+
+  $('#modal-close').addEventListener('click', () => overlay.remove());
+  $('#modal-cancel')?.addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+
+  if (type === 'cron-create') {
+    $$('.cron-preset').forEach(btn => {
+      btn.addEventListener('click', () => { $('#cron-schedule').value = btn.dataset.val; });
+    });
+    $('#cron-submit').addEventListener('click', async () => {
+      const name = $('#cron-name').value;
+      const schedule = $('#cron-schedule').value;
+      const prompt = $('#cron-prompt').value;
+      const deliver = $('#cron-deliver').value;
+      if (!schedule) { toast('请输入执行周期', 'error'); return; }
+      try {
+        const body = { schedule };
+        if (name) body.name = name;
+        if (prompt) body.prompt = prompt;
+        if (deliver) body.deliver = deliver;
+        const r = await fetch('/api/cron', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+        if (r.ok) { toast('任务已创建', 'success'); overlay.remove(); renderCron(); }
+        else toast('创建失败: ' + (r.error || ''), 'error');
+      } catch (e) { toast(e.message, 'error'); }
+    });
+  }
+}
+
+/* ─── Theme Toggle ─────────────────────────────────────────────────── */
+function getPreferredTheme() {
+  const saved = localStorage.getItem('hermes-theme');
+  if (saved) return saved;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('hermes-theme', theme);
+  const btn = $('#theme-toggle');
+  if (btn) btn.textContent = theme === 'dark' ? '🌙' : '☀️';
+}
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute('data-theme') || getPreferredTheme();
+  applyTheme(cur === 'dark' ? 'light' : 'dark');
+}
+
+/* ─── Init ────────────────────────────────────────────────────────── */
+function handleHash() {
+  const raw = window.location.hash.slice(1);
+  const hash = raw.split('?')[0] || 'dashboard';
+  $$('.dk').forEach(el => el.classList.remove('active'));
+  const dk = $(`.dk[data-page="${hash}"]`);
+  if (dk) dk.classList.add('active');
+  navigate(hash);
+}
+window.addEventListener('hashchange', handleHash);
+
+// Reliable hash persistence across refresh via sessionStorage.
+// On bfcache restore: browser restores URL (including hash) before pageshow fires,
+// so we just re-run handleHash() to sync DOM.
+// On full reload: URL is restored by browser, but sessionStorage survives
+// and we re-apply handleHash() anyway — harmless redundancy.
+window.addEventListener('pageshow', e => {
+  if (e.persisted) handleHash();
+});
+
+// Restore page from sessionStorage on init (handles mobile browsers where
+// location.hash is lost or ignored on refresh, bfcache clears it, etc.)
+const savedPage = sessionStorage.getItem('hermes-page');
+if (savedPage && (window.location.hash === '' || window.location.hash === '#')) {
+  window.location.hash = savedPage;
+} else if (savedPage && window.location.hash !== '#' + savedPage) {
+  window.location.hash = savedPage;
+} else {
+  handleHash();
+}
+applyTheme(getPreferredTheme());
+$('#theme-toggle').addEventListener('click', toggleTheme);
+
+</script>
+</body>
+</html>
