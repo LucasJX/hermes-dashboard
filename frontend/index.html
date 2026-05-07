@@ -301,19 +301,25 @@ async function renderDashboard() {
         </div>
         <div class="qb-body">
           <div class="qb-bar-row">
-            <span class="qb-bar-label">每轮配额</span>
+            <div class="qb-bar-row-inner">
+              <span class="qb-bar-label">每轮配额</span>
+              <span class="qb-bar-num" id="qb-interval-num">— / —</span>
+            </div>
             <div class="qb-bar-track"><div class="qb-bar-fill bar-green" id="qb-interval-fill-bar"></div></div>
-            <span class="qb-bar-num" id="qb-interval-num">— / —</span>
           </div>
           <div class="qb-bar-row">
-            <span class="qb-bar-label">每周配额</span>
+            <div class="qb-bar-row-inner">
+              <span class="qb-bar-label">每周配额</span>
+              <span class="qb-bar-num" id="qb-weekly-num">— / —</span>
+            </div>
             <div class="qb-bar-track"><div class="qb-bar-fill bar-green" id="qb-weekly-fill-bar"></div></div>
-            <span class="qb-bar-num" id="qb-weekly-num">— / —</span>
           </div>
           <div class="qb-bar-row">
-            <span class="qb-bar-label">每月配额</span>
+            <div class="qb-bar-row-inner">
+              <span class="qb-bar-label">每月配额</span>
+              <span class="qb-bar-num" id="qb-monthly-num">— / —</span>
+            </div>
             <div class="qb-bar-track"><div class="qb-bar-fill bar-green" id="qb-monthly-fill-bar"></div></div>
-            <span class="qb-bar-num" id="qb-monthly-num">— / —</span>
           </div>
           <div class="qb-detail-grid">
             <div class="qb-detail-cell"><div class="qb-dc-label">本周剩余</div><div class="qb-dc-val" id="qb-dc-weekly-remain">—</div></div>
@@ -468,8 +474,9 @@ async function renderSessions() {
   }
 }
 
-// ── Sessions page: stats header + filter pills + channel cards ──────
+// ── Sessions page: stats header + collapsible channel groups ──────────
 function renderSpPage(sessions) {
+  // Group by source
   const groups = {};
   sessions.forEach(s => {
     const src = s.source || 'unknown';
@@ -477,16 +484,53 @@ function renderSpPage(sessions) {
     groups[src].push(s);
   });
 
+  // Source display order + labels
   const srcOrder = ['weixin','telegram','discord','slack','whatsapp','mattermost','cron','tui','cli','unknown'];
-  const sorted = Object.keys(groups).sort((a,b) => {
-    const ai=srcOrder.indexOf(a), bi=srcOrder.indexOf(b);
-    return (ai===-1?99:ai)-(bi===-1?99:bi);
+  const srcLabels2 = { weixin:'微信', telegram:'Telegram', discord:'Discord', slack:'Slack', whatsapp:'WhatsApp', mattermost:'Mattermost', cron:'定时任务', tui:'TUI', cli:'CLI', unknown:'未知' };
+
+  const sorted = Object.keys(groups).sort((a, b) => {
+    // Sort by most recent session within each group
+    const ma = groups[a].reduce((best, s) => { const t = new Date(s.started_at); return t > best ? t : best; }, 0);
+    const mb = groups[b].reduce((best, s) => { const t = new Date(s.started_at); return t > best ? t : best; }, 0);
+    return mb - ma;
   });
 
-  const activeCount   = sessions.filter(s => isTrulyActive(s)).length;
-  const totalMsgs    = sessions.reduce((t,s) => t+(s.message_count||0), 0);
-  const totalTokens  = sessions.reduce((t,s) => t+(s.input_tokens||0)+(s.output_tokens||0), 0);
-  const totalCost    = sessions.reduce((t,s) => t+(s.cost||0), 0);
+  // Overall stats
+  const activeCount  = sessions.filter(s => isTrulyActive(s)).length;
+  const totalMsgs   = sessions.reduce((t, s) => t + (s.message_count || 0), 0);
+  const totalTokens = sessions.reduce((t, s) => t + (s.input_tokens || 0) + (s.output_tokens || 0), 0);
+  const totalCost   = sessions.reduce((t, s) => t + (s.cost || 0), 0);
+
+  // Build accordion HTML
+  const accordions = sorted.map(src => {
+    const srcSessions = groups[src];
+    const activeOnes  = srcSessions.filter(s => isTrulyActive(s));
+    const doneOnes    = srcSessions.filter(s => !isTrulyActive(s));
+    const label       = srcLabels2[src] || src;
+    const emoji       = chEmoji(src);
+
+    // Sort each group by started_at desc (most recent first)
+    const sortByTime = arr => [...arr].sort((a, b) => new Date(b.started_at) - new Date(a.started_at));
+
+    const rows = [
+      ...sortByTime(activeOnes).map(s => buildSpSessionRow(s, true)),
+      ...sortByTime(doneOnes).map(s => buildSpSessionRow(s, false)),
+    ].join('');
+
+    return `
+      <div class="sp-group" data-src="${src}">
+        <div class="sp-group-header" onclick="toggleSpGroup(this)">
+          <div class="sp-group-title">
+            <span class="sp-group-emoji">${emoji}</span>
+            <span class="sp-group-name">${label}</span>
+            <span class="sp-group-count">${srcSessions.length}</span>
+            ${activeOnes.length > 0 ? `<span class="sp-group-active-badge">${activeOnes.length} 进行中</span>` : ''}
+          </div>
+          <div class="sp-group-arrow">▾</div>
+        </div>
+        <div class="sp-group-body">${rows}</div>
+      </div>`;
+  }).join('');
 
   $('#app').innerHTML = `
     <div class="card" style="margin-bottom:16px">
@@ -501,22 +545,35 @@ function renderSpPage(sessions) {
         <div class="sp-stat"><div class="sp-stat-value">${fmtCost(totalCost)}</div><div class="sp-stat-label">费用合计</div></div>
       </div>
     </div>
-    <div id="sp-list"></div>`;
+    <div id="sp-list">${accordions}</div>`;
 
-  renderSpFlat(sessions);
-}
-
-// ── Flat session list (no channel grouping) ─────────────────────────
-function renderSpFlat(sessions) {
-  const sorted = [...sessions].sort((a, b) =>
-    new Date(b.started_at) - new Date(a.started_at)
-  );
-
-  $('#sp-list').innerHTML = sorted.map(s => buildSpSessionRow(s)).join('');
-
+  // Attach click handlers
   $$('.sp-session-row').forEach(el => {
     el.addEventListener('click', () => openSpDetail(el.dataset.session, el));
   });
+}
+
+// Toggle accordion group
+function toggleSpGroup(header) {
+  const group = header.parentElement;
+  const body  = group.querySelector('.sp-group-body');
+  const arrow = group.querySelector('.sp-group-arrow');
+  const isOpen = group.classList.contains('open');
+  if (isOpen) {
+    group.classList.remove('open');
+    body.style.display = 'none';
+    arrow.textContent = '▾';
+  } else {
+    group.classList.add('open');
+    body.style.display = '';
+    arrow.textContent = '▴';
+  }
+}
+
+// ── Flat list (unused, kept for compatibility) ─────────────────────────
+function renderSpFlat(sessions) {
+  $('#sp-list').innerHTML = sessions.map(s => buildSpSessionRow(s, isTrulyActive(s))).join('');
+  $$('.sp-session-row').forEach(el => el.addEventListener('click', () => openSpDetail(el.dataset.session, el)));
 }
 
 // ── Session row ─────────────────────────────────────────────────────
@@ -531,13 +588,14 @@ function isTrulyActive(s) {
   return false;
 }
 
-function buildSpSessionRow(s) {
-  const active = isTrulyActive(s);
+function buildSpSessionRow(s, active) {
+  const spinner = active
+    ? `<div class="session-spinner"></div>`
+    : `<div style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:16px;background:var(--surface-2);border-radius:8px;flex-shrink:0">${chEmoji(s.source)}</div>`;
+  const totalTokens = (s.input_tokens || 0) + (s.output_tokens || 0);
   return `
     <div class="sp-session-row${active ? ' active' : ''}" data-session="${s.id}">
-      <div class="sp-row-icon">
-        <div style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:16px;background:var(--surface-2);border-radius:8px;flex-shrink:0">${chEmoji(s.source)}</div>
-      </div>
+      <div class="sp-row-icon">${spinner}</div>
       <div class="sp-row-main">
         <div class="sp-row-id">${s.id}</div>
         <div class="sp-row-meta">
@@ -547,7 +605,7 @@ function buildSpSessionRow(s) {
           <span class="dot">·</span>
           <span>${fmtNum(s.message_count||0)} 条</span>
           <span class="dot">·</span>
-          <span>${fmtNum((s.input_tokens||0)+(s.output_tokens||0))} tokens</span>
+          <span>${fmtNum(totalTokens)} tokens</span>
         </div>
       </div>
       <div class="sp-row-cost"><strong>¥${(s.cost||0).toFixed(2)}</strong></div>
@@ -1211,8 +1269,9 @@ function renderSkillsList(skills) {
         <div class="card-title"><span class="card-title-icon">⚡</span>技能中心</div>
         <span style="font-size:12px;color:var(--ink-3)">${skills.length} 个技能 · ${categories.length} 个分类</span>
       </div>
-      <div style="margin-bottom:14px">
-        <input class="form-input" id="skill-search" type="search" placeholder="搜索技能、分类或描述…" style="width:100%" />
+      <div class="search-wrap" style="margin-bottom:14px">
+        <span class="search-icon">🔍</span>
+        <input class="search-input" id="skill-search" type="search" placeholder="搜索技能、分类或描述…" />
       </div>
       <div id="skill-content">${categoryHTML}</div>
       <div class="empty hidden" id="skill-empty">
@@ -1389,7 +1448,10 @@ function renderLogsViewer(logFiles) {
       </div>
       <div class="log-file-list" id="log-file-list" style="margin-top:12px"></div>
       <div class="log-filter-row">
-        <input id="log-kw" type="search" placeholder="关键词…" style="max-width:200px" />
+        <div class="search-wrap" style="flex:1;max-width:260px">
+          <span class="search-icon">🔍</span>
+          <input id="log-kw" class="search-input" type="search" placeholder="关键词…" />
+        </div>
         <div class="log-level-filter">
           <button class="log-level-btn active" data-level="">全部</button>
           <button class="log-level-btn" data-level="ERROR">ERROR</button>

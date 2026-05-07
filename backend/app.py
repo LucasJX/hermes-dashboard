@@ -177,9 +177,10 @@ def check_channel(name):
             last_active = m.group(1)
 
         lower_line = last_line.lower()
-        if "send failed" in lower_line or "error" in lower_line or "rate limited" in lower_line:
+        # "error" is too broad — only match explicit failure patterns
+        if "send failed" in lower_line or "rate limited" in lower_line:
             status = "error"
-        elif "reconnect" in lower_line or "network error" in lower_line:
+        elif "reconnect" in lower_line or ("network error" in lower_line and "resumed" not in lower_line):
             status = "reconnecting"
         elif "polling resumed" in lower_line or "connected" in lower_line or "started" in lower_line:
             status = "online"
