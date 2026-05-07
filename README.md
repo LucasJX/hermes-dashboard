@@ -1,65 +1,54 @@
-# Hermes Dashboard
+# Hermes Dashboard 🦞
 
-Hermes Agent 可视化控制面板，基于 Apple Design System（暗色主题）。
+A modern, Apple-inspired monitoring dashboard for [Hermes Agent](https://github.com/LucasJX/hermes-agent). Real-time overview of channels, sessions, models, skills, logs, and quota usage.
 
-## 技术栈
+## Features
 
-- **前端**：纯 HTML + CSS + Vanilla JS，零框架依赖
-- **后端**：Python Flask（port 3801）
-- **前端代理**：Python 内置 HTTP Server（port 3800），`/api/*` 代理到后端
-- **数据源**：Hermes Agent SQLite（`~/.hermes/state.db`）
+- **Liquid Glass UI** — backdrop-filter blur, translucent surfaces, luminous borders
+- **Dashboard** — Hero stats + quota card + channel status + active sessions
+- **Channels** — Platform status (Telegram, Weixin, Discord, Slack, etc.) with per-platform session/token stats
+- **Sessions** — Collapsible source groups, message viewer, session details
+- **Models** — Provider management (MiniMax, xiaomi, etc.), model list, config editor
+- **Skills** — Installed skills browser with SKILL.md viewer
+- **Logs** — Multi-file log viewer with level/keyword filters, newest-first display
+- **Quota** — MiniMax quota bars (per-round/weekly/monthly) + generic provider usage stats (tokens/cost from sessions DB)
+- **Account** — Login, password management, session tokens (bypasses proxy cookie issues)
 
-## 项目结构
-
-```
-hermes-dashboard/
-├── SPEC.md                  # 设计规范
-├── README.md
-├── .gitignore
-├── backend/
-│   ├── app.py               # Flask API
-│   └── requirements.txt
-├── frontend/
-│   ├── index.html            # SPA
-│   └── css/style.css
-├── server.py                 # 前端代理服务
-└── start.sh                  # 一键启动
-```
-
-## 快速启动
+## Quick Start
 
 ```bash
+git clone https://github.com/LucasJX/hermes-dashboard.git
 cd hermes-dashboard
+chmod +x start.sh
 ./start.sh
 ```
 
-然后访问 **http://localhost:3800**
+- Frontend: `http://localhost:3800`
+- Backend: `http://localhost:3801`
 
-## 功能模块
+Default login: `admin` / `admin` (change on first use)
 
-- 系统概览（会话/消息/Token/费用）
-- Token 配额追踪（每轮/每周/每月）
-- 频道状态（Telegram / Weixin / Discord / Slack 等）
-- 会话管理
-- 技能列表
-- Cron 定时任务
-- 系统日志
-- GitHub Release 更新日志
+## Requirements
 
-## 配置
+- Python 3.10+
+- Hermes Agent installed and configured (`~/.hermes/`)
+- Dependencies: `flask`, `flask-cors`, `psutil`, `pyyaml`
 
-启动前确保 `HERMES_HOME` 环境变量指向正确的 Hermes 配置目录（默认 `~/.hermes`）：
-
-```bash
-export HERMES_HOME="$HOME/.hermes"
-./start.sh
-```
-
-## 依赖
+## Architecture
 
 ```
-flask
-flask-cors
-psutil
-pyyaml
+server.py (port 3800)  →  Static files + proxy to backend
+backend/app.py (port 3801)  →  Flask API, reads Hermes state.db + auth.json
+frontend/index.html  →  Single-page app (vanilla JS, no framework)
 ```
+
+## Environment
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HERMES_HOME` | `~/.hermes` | Hermes agent home directory |
+| `DASHBOARD_SECRET` | random | Flask session secret key |
+
+## License
+
+MIT
