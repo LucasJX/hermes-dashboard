@@ -51,12 +51,37 @@
   </div>
 
   <!-- Right: Controls Dock (theme + avatar) -->
-  <div class="topdock-right">
+  <div class="topdock-right" id="topdock-right">
     <div id="theme-toggle" title="切换主题" style="display:flex;align-items:center;padding:5px 10px;border-radius:10px;cursor:pointer;color:var(--ink-2);">
       <span style="font-size:18px;line-height:1;">☀️</span>
     </div>
-    <div title="Hermes" style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--blue);font-size:14px;cursor:pointer;flex-shrink:0;">
+    <!-- Expanded controls (hidden by default, slide in when expanded) -->
+    <div class="right-controls-expanded" id="right-controls-expanded" style="display:flex;align-items:center;gap:6px;opacity:0;transform:translateX(12px);transition:all 0.3s cubic-bezier(0.4,0,0.2,1);overflow:hidden;white-space:nowrap;">
+      <div class="right-control-item" id="rc-account" onclick="navigate('account'); toggleRightDock();" style="padding:5px 12px;border-radius:10px;cursor:pointer;font-size:13px;color:var(--ink-2);transition:background 0.18s,color 0.18s;" onmouseover="this.style.background='var(--surface-2)';this.style.color='var(--ink)'" onmouseout="this.style.background='';this.style.color='var(--ink-2)'">账号管理</div>
+      <div class="right-control-item" onclick="doLogout(); toggleRightDock();" style="padding:5px 12px;border-radius:10px;cursor:pointer;font-size:13px;color:var(--red);transition:background 0.18s;" onmouseover="this.style.background='rgba(255,59,48,0.1)'" onmouseout="this.style.background=''">退出</div>
+    </div>
+    <div id="avatar-btn" title="账号管理" style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--blue);font-size:14px;cursor:pointer;flex-shrink:0;position:relative;">
       🦞
+    </div>
+  </div>
+</div>
+
+<!-- ─── Login Overlay ───────────────────────────────────────────────── -->
+<div id="login-overlay" class="login-overlay" style="display:none;">
+  <div class="login-card">
+    <div class="login-logo">🦞</div>
+    <div class="login-title">Hermes Dashboard</div>
+    <div class="login-form">
+      <div class="login-field">
+        <label class="login-label">用户名</label>
+        <input class="login-input" id="li-username" type="text" placeholder="用户名" autocomplete="username" />
+      </div>
+      <div class="login-field">
+        <label class="login-label">密码</label>
+        <input class="login-input" id="li-password" type="password" placeholder="密码" autocomplete="current-password" />
+      </div>
+      <div class="login-error" id="li-error" style="display:none;"></div>
+      <button class="login-btn" id="li-submit">登录</button>
     </div>
   </div>
 </div>
@@ -75,6 +100,7 @@ const API = '/api';
 let currentPage = 'dashboard';
 let cache = {};
 let toastTimer = null;
+let currentUser = null;
 
 /* ─── Source Labels (shared) ──────────────────────────────────────── */
 const srcLabels = {
@@ -86,7 +112,13 @@ const srcLabels = {
 /* ─── Util ────────────────────────────────────────────────────────── */
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
-const api = path => fetch(API + path).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+/* ─── Auth: localStorage token (bypasses proxy cookie issues) ────────────── */
+const getToken = () => localStorage.getItem('hermes_token') || '';
+const setToken = t => { if (t) localStorage.setItem('hermes_token', t); else localStorage.removeItem('hermes_token'); };
+const authHeaders = () => { const t = getToken(); return t ? { 'Authorization': 'Bearer ' + t } : {}; };
+
+/* ─── API ───────────────────────────────────────────────────────────────── */
+const api = path => fetch(API + path, { headers: authHeaders(), credentials: 'include' }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
 
 function timeAgo(iso) {
   if (!iso) return '—';
@@ -160,6 +192,7 @@ function statusLabel(status) {
 function escapeHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
+const escHtml = escapeHtml;
 
 /* ─── Simple Markdown Renderer ───────────────────────────────────── */
 function renderMarkdown(text) {
@@ -187,6 +220,12 @@ document.querySelector('#topdock').addEventListener('click', e => {
 function navigate(page) {
   currentPage = page;
   sessionStorage.setItem('hermes-page', page); // persist across refresh on mobile
+  // Sync URL hash so browser refresh keeps the current page
+  if (window.location.hash.slice(1) !== page) {
+    _navigating = true;
+    window.location.hash = page;
+    _navigating = false;
+  }
   window.scrollTo({ top: 0 });
   switch (page) {
     case 'dashboard': renderDashboard(); break;
@@ -196,6 +235,7 @@ function navigate(page) {
     case 'cron':      renderCron();      break;
     case 'models':    renderModels();    break;
     case 'skills':    renderSkills();    break;
+    case 'account':   renderAccount();   break;
     case 'logs':      renderLogs();      break;
     default:          renderDashboard();
   }
@@ -215,7 +255,8 @@ async function renderDashboard() {
     const totalCost     = stats.total_cost_cny || 0;
     const activeCh       = (stats.channels || []).filter(c => c.status === 'online').length;
     const uptime         = stats.uptime || '—';
-    const weeklyUsedK    = fmtNum(quota.models[0]?.weekly_used ?? 0);
+    const quotaAvailable = quota.quota_available !== false;
+    const weeklyUsedK    = quotaAvailable ? fmtNum(quota.models[0]?.weekly_used ?? 0) : '—';
 
     const recentGroups = {};
     (stats.recent_sessions || []).forEach(s => {
@@ -297,8 +338,9 @@ async function renderDashboard() {
             <span class="card-title-icon">◆</span>
             <span id="qb-model-title">—</span>
           </div>
-          <button class="card-action-btn" id="qb-refresh-btn">刷新</button>
+          ${quotaAvailable ? '<button class="card-action-btn" id="qb-refresh-btn">刷新</button>' : ''}
         </div>
+        ${quotaAvailable ? `
         <div class="qb-body">
           <div class="qb-bar-row">
             <div class="qb-bar-row-inner">
@@ -330,6 +372,45 @@ async function renderDashboard() {
             <div class="qb-detail-cell"><div class="qb-dc-label">每月刷新</div><div class="qb-dc-val" id="qb-dc-monthly-reset">—</div></div>
           </div>
         </div>
+        ` : (quota.usage_stats ? `
+        <div class="qb-body">
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">
+            <div style="text-align:center;padding:12px 8px;background:var(--surface-2);border-radius:12px">
+              <div style="font-size:20px;font-weight:700;color:var(--ink)">${fmtNum((quota.today||{}).in||0 + (quota.today||{}).out||0)}</div>
+              <div style="font-size:11px;color:var(--ink-3);margin-top:2px">今日 Tokens</div>
+            </div>
+            <div style="text-align:center;padding:12px 8px;background:var(--surface-2);border-radius:12px">
+              <div style="font-size:20px;font-weight:700;color:var(--ink)">${fmtNum((quota.week||{}).in||0 + (quota.week||{}).out||0)}</div>
+              <div style="font-size:11px;color:var(--ink-3);margin-top:2px">本周 Tokens</div>
+            </div>
+            <div style="text-align:center;padding:12px 8px;background:var(--surface-2);border-radius:12px">
+              <div style="font-size:20px;font-weight:700;color:var(--blue)">${fmtCost((quota.month||{}).cost||0)}</div>
+              <div style="font-size:11px;color:var(--ink-3);margin-top:2px">本月费用</div>
+            </div>
+          </div>
+          ${(quota.models||[]).length > 0 ? `
+          <div style="font-size:12px;color:var(--ink-3);font-weight:600;margin-bottom:8px">模型用量</div>
+          ${quota.models.slice(0,5).map(m => {
+            const total = m.in + m.out;
+            const maxTotal = Math.max(1, ...quota.models.map(x => x.in + x.out));
+            const pct = Math.round(total / maxTotal * 100);
+            return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+              <div style="font-size:12px;color:var(--ink-2);width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0" title="${escapeHtml(m.name)}">${escapeHtml(m.name)}</div>
+              <div style="flex:1;height:6px;background:var(--surface-2);border-radius:3px;overflow:hidden">
+                <div style="height:100%;width:${pct}%;background:var(--blue);border-radius:3px"></div>
+              </div>
+              <div style="font-size:11px;color:var(--ink-3);width:60px;text-align:right;flex-shrink:0">${fmtNum(total)}</div>
+            </div>`;
+          }).join('')}
+          ` : ''}
+        </div>
+        ` : `
+        <div style="padding:24px 16px;text-align:center">
+          <div style="font-size:32px;margin-bottom:8px">📊</div>
+          <div style="font-size:13px;color:var(--ink-2);margin-bottom:4px">${escapeHtml(quota.message || '暂无数据')}</div>
+          <div style="font-size:12px;color:var(--ink-3)">Provider: ${escapeHtml(quota.provider || '—')} · Model: ${escapeHtml(quota.model || '—')}</div>
+        </div>
+        `)}
       </div>
 
       <div class="card-row-2col">
@@ -367,59 +448,69 @@ async function renderDashboard() {
 
     // ── Quota card: populate first model data ──
     // Auto-detect default model from hermes config
-    const activeModels = quota.models.filter(m => m.interval_total > 0 || m.weekly_total > 0);
+    const activeModels = (quota.models || []).filter(m => m.interval_total > 0 || m.weekly_total > 0);
     const modelNames = { 'MiniMax-M*': 'AI 对话', 'music-2.6': '音乐生成', 'music-cover': '音乐封面', 'lyrics_generation': '歌词生成', 'coding-plan-vlm': '代码模型', 'coding-plan-search': '搜索模型' };
     const modelIcons = { 'MiniMax-M*': '🤖', 'music-2.6': '🎵', 'music-cover': '🎤', 'lyrics_generation': '📝', 'coding-plan-vlm': '💻', 'coding-plan-search': '🔍' };
 
     // Default model: MiniMax-M* (main chat model)
     const defaultModel = activeModels.find(m => m.name === 'MiniMax-M*') || activeModels[0];
 
-    function updateQuotaCard(m) {
-      if (!m) return;
-      // Model title
-      $('#qb-model-title').textContent = (modelNames[m.name] || m.name) + ' ' + (modelIcons[m.name] || '');
-      // Progress bar colors based on usage percentage
-      const iPct = m.interval_total ? (m.interval_used / m.interval_total) * 100 : 0;
-      const wPct = m.weekly_total ? (m.weekly_used / m.weekly_total) * 100 : 0;
-      const moPct = m.monthly_total ? (m.monthly_used / m.monthly_total) * 100 : wPct;
-      const setBar = (el, pct) => {
-        el.style.width = Math.min(100, pct) + '%';
-        el.className = 'qb-bar-fill ' + getBarColor(pct, 100);
-      };
-      setBar($('#qb-interval-fill-bar'), iPct);
-      setBar($('#qb-weekly-fill-bar'), wPct);
-      setBar($('#qb-monthly-fill-bar'), moPct);
-      // Numbers
-      $('#qb-interval-num').textContent = fmtNum(m.interval_used) + ' / ' + fmtNum(m.interval_total);
-      $('#qb-weekly-num').textContent = fmtNum(m.weekly_used) + ' / ' + fmtNum(m.weekly_total);
-      $('#qb-monthly-num').textContent = fmtNum(m.monthly_used) + ' / ' + fmtNum(m.monthly_total);
-      // Detail cells
-      $('#qb-dc-weekly-remain').textContent = fmtNum(m.weekly_remains ?? 0);
-      $('#qb-dc-interval-total').textContent = fmtNum(m.interval_total ?? 0);
-      $('#qb-dc-interval-remain').textContent = fmtNum(m.interval_remains ?? 0);
-      $('#qb-dc-interval-reset').textContent = quota.per_round_reset_str || '—';
-      $('#qb-dc-weekly-reset').textContent = quota.weekly_reset_str || '—';
-      $('#qb-dc-monthly-reset').textContent = quota.monthly_reset_str || '—';
-    }
+    if (quotaAvailable) {
+      function updateQuotaCard(m) {
+        if (!m) return;
+        // Model title
+        const t = $('#qb-model-title');
+        if (t) t.textContent = (modelNames[m.name] || m.name) + ' ' + (modelIcons[m.name] || '');
+        // Progress bar colors based on usage percentage
+        const iPct = m.interval_total ? (m.interval_used / m.interval_total) * 100 : 0;
+        const wPct = m.weekly_total ? (m.weekly_used / m.weekly_total) * 100 : 0;
+        const moPct = m.monthly_total ? (m.monthly_used / m.monthly_total) * 100 : wPct;
+        const setBar = (el, pct) => {
+          if (!el) return;
+          el.style.width = Math.min(100, pct) + '%';
+          el.className = 'qb-bar-fill ' + getBarColor(pct, 100);
+        };
+        setBar($('#qb-interval-fill-bar'), iPct);
+        setBar($('#qb-weekly-fill-bar'), wPct);
+        setBar($('#qb-monthly-fill-bar'), moPct);
+        // Numbers
+        const iv = $('#qb-interval-num'); if (iv) iv.textContent = fmtNum(m.interval_used) + ' / ' + fmtNum(m.interval_total);
+        const wv = $('#qb-weekly-num');   if (wv) wv.textContent = fmtNum(m.weekly_used) + ' / ' + fmtNum(m.weekly_total);
+        const mv = $('#qb-monthly-num');  if (mv) mv.textContent = fmtNum(m.monthly_used) + ' / ' + fmtNum(m.monthly_total);
+        // Detail cells
+        const el = (id, txt) => { const e = $(id); if (e) e.textContent = txt; };
+        el('#qb-dc-weekly-remain', fmtNum(m.weekly_remains ?? 0));
+        el('#qb-dc-interval-total', fmtNum(m.interval_total ?? 0));
+        el('#qb-dc-interval-remain', fmtNum(m.interval_remains ?? 0));
+        el('#qb-dc-interval-reset', quota.per_round_reset_str || '—');
+        el('#qb-dc-weekly-reset', quota.weekly_reset_str || '—');
+        el('#qb-dc-monthly-reset', quota.monthly_reset_str || '—');
+      }
 
-    // Init with default model
-    updateQuotaCard(defaultModel);
+      // Init with default model
+      updateQuotaCard(defaultModel);
 
-    // Refresh button
-    $('#qb-refresh-btn')?.addEventListener('click', () => {
-      const btn = $('#qb-refresh-btn');
-      btn.textContent = '刷新中…';
-      btn.disabled = true;
-      fetch('/api/stats?t=' + Date.now()).then(r => r.json()).then(data => {
-        if (data.quota) { quota = data.quota; updateQuotaCard(defaultModel); }
-        btn.textContent = '刷新';
-        btn.disabled = false;
-      }).catch(() => {
-        btn.textContent = '刷新';
-        btn.disabled = false;
-        toast('刷新失败', 'error');
+      // Refresh button
+      $('#qb-refresh-btn')?.addEventListener('click', () => {
+        const btn = $('#qb-refresh-btn');
+        btn.textContent = '刷新中…';
+        btn.disabled = true;
+        fetch('/api/quota?t=' + Date.now(), { headers: authHeaders() }).then(r => r.json()).then(q => {
+          quota = q; updateQuotaCard(defaultModel);
+          btn.textContent = '刷新';
+          btn.disabled = false;
+        }).catch(() => {
+          btn.textContent = '刷新';
+          btn.disabled = false;
+          toast('刷新失败', 'error');
+        });
       });
-    });
+
+      // Listen for model changes from models page
+      window.addEventListener('model-changed', () => {
+        api('/quota').then(q => { quota = q; updateQuotaCard(defaultModel); }).catch(() => {});
+      });
+    }
 
   } catch (e) {
     $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">加载失败: ${e.message}</div></div>`;
@@ -431,29 +522,143 @@ async function renderDashboard() {
 async function renderChannels() {
   $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div></div>';
   try {
-    const data = await api('/channels');
-    const statusOrder = { online: 0, error: 1, reconnecting: 2, offline: 3, unused: 4, unconfigured: 5, unknown: 6 };
-    const sorted = [...(data.channels || [])].sort((a, b) => statusOrder[a.status] - statusOrder[b.status]);
+    const [chData, sessData] = await Promise.all([api('/channels'), api('/sessions?limit=500')]);
+    const channels = chData.channels || [];
+    const sessions = sessData.sessions || [];
+
+    // Per-channel session stats
+    const chStats = {};
+    channels.forEach(c => { chStats[c.name.toLowerCase()] = { sessions: 0, msgs: 0, tokens: 0 }; });
+    sessions.forEach(s => {
+      const key = (s.source || '').toLowerCase();
+      if (chStats[key]) {
+        chStats[key].sessions++;
+        chStats[key].msgs += s.message_count || 0;
+        chStats[key].tokens += (s.input_tokens || 0) + (s.output_tokens || 0);
+      }
+    });
+
+    const statusOrder = { online: 0, reconnecting: 1, error: 2, offline: 3, unused: 4, unconfigured: 5, unknown: 6 };
+    const sorted = [...channels].sort((a, b) => statusOrder[a.status] - statusOrder[b.status]);
+
+    const onlineCount = channels.filter(c => c.status === 'online').length;
+    const errorCount = channels.filter(c => c.status === 'error' || c.status === 'reconnecting').length;
+    const offlineCount = channels.filter(c => ['offline','unused','unconfigured','unknown'].includes(c.status)).length;
+
+    const channelDesc = {
+      telegram: '即时通讯 · Bot API 长轮询',
+      weixin:   '微信公众号 · 消息推送',
+      discord:  '游戏社区 · WebSocket 连接',
+      slack:    '团队协作 · Socket Mode',
+      whatsapp: '移动端 · WhatsApp Web',
+      mattermost: '企业通讯 · WebSocket 连接'
+    };
+
+    const chColorMap = {
+      telegram: '#229ED9', weixin: '#07C160', discord: '#5865F2',
+      slack: '#611f69', whatsapp: '#25D366', mattermost: '#0072C1'
+    };
+
+    const statusStyles = {
+      online:       { color: '#34c759', bg: 'rgba(52,199,89,0.12)',  border: 'rgba(52,199,89,0.3)',  icon: '●' },
+      error:        { color: '#ff3b30', bg: 'rgba(255,59,48,0.12)',  border: 'rgba(255,59,48,0.3)',  icon: '●' },
+      reconnecting: { color: '#ff9f0a', bg: 'rgba(255,159,10,0.12)', border: 'rgba(255,159,10,0.3)', icon: '◐' },
+      offline:      { color: '#8e8e93', bg: 'rgba(142,142,147,0.10)', border: 'rgba(142,142,147,0.2)', icon: '○' },
+      unused:       { color: '#636366', bg: 'rgba(99,99,102,0.10)',  border: 'rgba(99,99,102,0.2)',  icon: '○' },
+      unconfigured: { color: '#aeaeb2', bg: 'rgba(174,174,178,0.08)', border: 'rgba(174,174,178,0.2)', icon: '○' },
+      unknown:      { color: '#8e8e93', bg: 'rgba(142,142,147,0.10)', border: 'rgba(142,142,147,0.2)', icon: '○' }
+    };
+
+    const fmtNum = n => n >= 10000 ? (n/1000).toFixed(1) + 'k' : n.toLocaleString();
+    const fmtTok = n => n >= 1000000 ? (n/1000000).toFixed(1) + 'M' : n >= 1000 ? (n/1000).toFixed(1) + 'k' : String(n);
 
     $('#app').innerHTML = `
-      <div class="card" style="margin-bottom:16px">
-        <div class="card-title-row" style="margin-bottom:14px">
-          <div class="card-title"><span class="card-title-icon">◆</span>频道</div>
-          <span style="font-size:12px;color:var(--ink-3)">${data.channels.length} 个已配置平台</span>
+      <style>
+        .ch-hero { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:20px; }
+        .ch-hero-card {
+          background:var(--glass-1); backdrop-filter:blur(24px) saturate(160%); -webkit-backdrop-filter:blur(24px) saturate(160%);
+          border:1px solid var(--glass-border); border-radius:var(--radius-xl); padding:18px 20px;
+          display:flex; flex-direction:column; gap:4px;
+        }
+        .ch-hero-val { font-size:28px; font-weight:700; letter-spacing:-0.5px; color:var(--ink); }
+        .ch-hero-label { font-size:12px; color:var(--ink-3); font-weight:500; }
+        .ch-list { display:flex; flex-direction:column; gap:8px; }
+        .ch-row {
+          background:var(--glass-1); backdrop-filter:blur(24px) saturate(160%); -webkit-backdrop-filter:blur(24px) saturate(160%);
+          border:1px solid var(--glass-border); border-radius:var(--radius-xl);
+          padding:16px 20px; display:flex; align-items:center; gap:16px;
+          transition:border-color var(--transition), box-shadow var(--transition), transform var(--transition);
+        }
+        .ch-row:hover { border-color:rgba(0,102,204,0.3); box-shadow:0 2px 12px rgba(0,0,0,0.06); transform:translateY(-1px); }
+        .ch-row-icon {
+          width:48px; height:48px; border-radius:14px; display:flex; align-items:center; justify-content:center;
+          font-size:22px; flex-shrink:0; color:#fff; font-weight:700;
+        }
+        .ch-row-body { flex:1; min-width:0; }
+        .ch-row-name { font-size:15px; font-weight:600; color:var(--ink); margin-bottom:2px; }
+        .ch-row-desc { font-size:12px; color:var(--ink-3); }
+        .ch-row-stats { display:flex; gap:16px; margin-top:6px; }
+        .ch-row-stat { font-size:11px; color:var(--ink-3); }
+        .ch-row-stat strong { color:var(--ink-2); font-weight:600; }
+        .ch-row-right { display:flex; flex-direction:column; align-items:flex-end; gap:6px; flex-shrink:0; }
+        .ch-pill {
+          display:inline-flex; align-items:center; gap:5px; padding:4px 10px; border-radius:9999px;
+          font-size:11px; font-weight:600; letter-spacing:0.2px; white-space:nowrap;
+        }
+        .ch-row-time { font-size:11px; color:var(--ink-3); white-space:nowrap; }
+        @media(max-width:640px) {
+          .ch-hero { grid-template-columns:1fr; }
+          .ch-row { flex-wrap:wrap; }
+          .ch-row-stats { flex-wrap:wrap; gap:8px; }
+          .ch-row-right { flex-direction:row; align-items:center; width:100%; justify-content:flex-end; margin-top:4px; }
+        }
+      </style>
+
+      <!-- Hero Stats -->
+      <div class="ch-hero">
+        <div class="ch-hero-card">
+          <div class="ch-hero-val">${channels.length}</div>
+          <div class="ch-hero-label">频道总数</div>
         </div>
-        <div class="ch-grid">
-          ${sorted.map(c => `
-            <div class="ch-card">
-              <div class="ch-top">
-                <div class="${chLogo(c.name)}">${chEmoji(c.name)}</div>
-                <span class="ch-name">${c.name}</span>
-                <span class="ch-status-dot ${c.status === 'online' ? 'online' : c.status === 'error' ? 'error' : 'offline'}">${statusLabel(c.status)}</span>
-              </div>
-              <div class="ch-body">
-                <div style="font-size:12px;color:var(--ink-3)">${c.last_active ? '最后活跃: ' + timeAgo(c.last_active) : '从未活跃'}</div>
-              </div>
-            </div>`).join('')}
+        <div class="ch-hero-card">
+          <div class="ch-hero-val" style="color:#34c759">${onlineCount}</div>
+          <div class="ch-hero-label">在线运行</div>
         </div>
+        <div class="ch-hero-card">
+          <div class="ch-hero-val" style="color:${errorCount > 0 ? '#ff3b30' : 'var(--ink-3)'}">${errorCount}</div>
+          <div class="ch-hero-label">异常 / 重连</div>
+        </div>
+      </div>
+
+      <!-- Channel List -->
+      <div class="ch-list">
+        ${sorted.map(c => {
+          const key = c.name.toLowerCase();
+          const st = statusStyles[c.status] || statusStyles.unknown;
+          const color = chColorMap[key] || '#8e8e93';
+          const desc = channelDesc[key] || c.name;
+          const stats = chStats[key] || { sessions: 0, msgs: 0, tokens: 0 };
+          const timeStr = c.last_active ? timeAgo(c.last_active) : '无记录';
+          return `
+            <div class="ch-row">
+              <div class="ch-row-icon" style="background:${color}">${chEmoji(key)}</div>
+              <div class="ch-row-body">
+                <div class="ch-row-name">${c.name}</div>
+                <div class="ch-row-desc">${desc}</div>
+                <div class="ch-row-stats">
+                  <div class="ch-row-stat"><strong>${stats.sessions}</strong> 会话</div>
+                  <div class="ch-row-stat"><strong>${fmtNum(stats.msgs)}</strong> 消息</div>
+                  <div class="ch-row-stat"><strong>${fmtTok(stats.tokens)}</strong> Tokens</div>
+                </div>
+              </div>
+              <div class="ch-row-right">
+                <div class="ch-pill" style="color:${st.color};background:${st.bg};border:1px solid ${st.border}">
+                  <span>${st.icon}</span>${statusLabel(c.status)}
+                </div>
+                <div class="ch-row-time">🕐 ${timeStr}</div>
+              </div>
+            </div>`;
+        }).join('')}
       </div>`;
   } catch (e) {
     $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
@@ -704,22 +909,23 @@ async function renderTokens() {
       sourceMap[src].out += s.output_tokens || 0;
     });
 
-    // 30-day trend
+    // 30-day trend + cost per day
     const dayMap = {};
     sessions.forEach(s => {
       if (!s.started_at) return;
       const day = s.started_at.slice(0, 10);
-      if (!dayMap[day]) dayMap[day] = { in: 0, out: 0, msgs: 0 };
+      if (!dayMap[day]) dayMap[day] = { in: 0, out: 0, msgs: 0, cost: 0 };
       dayMap[day].in += s.input_tokens || 0;
       dayMap[day].out += s.output_tokens || 0;
       dayMap[day].msgs += s.message_count || 0;
+      dayMap[day].cost += s.cost || 0;
     });
 
     const last30days = [];
     for (let i = 29; i >= 0; i--) {
       const d = new Date(); d.setDate(d.getDate() - i);
       const key = d.toISOString().slice(0, 10);
-      last30days.push({ day: key, ...(dayMap[key] || { in: 0, out: 0, msgs: 0 }) });
+      last30days.push({ day: key, ...(dayMap[key] || { in: 0, out: 0, msgs: 0, cost: 0 }) });
     }
 
     const maxDayTokens = Math.max(1, ...last30days.map(d => d.in + d.out));
@@ -757,12 +963,12 @@ async function renderTokens() {
     for (let i = 1; i <= daysInMonth; i++) {
       const d = new Date(currentYear, currentMonth, i);
       const key = d.toISOString().slice(0, 10);
-      monthDays.push({ day: key, dayNum: i, ...(dayMap[key] || { in: 0, out: 0, msgs: 0 }) });
+      monthDays.push({ day: key, dayNum: i, ...(dayMap[key] || { in: 0, out: 0, msgs: 0, cost: 0 }) });
     }
 
     // ── Trend chart: input + output both shown, with legend ──────────────────
     const fmtK = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'K' : n;
-    const W = 760, H = 160, PAD_L = 8, PAD_R = 56, PAD_T = 16, PAD_B = 28;
+    const W = 760, H = 160, PAD_L = 2, PAD_R = 52, PAD_T = 16, PAD_B = 28;
     const chartW = W - PAD_L - PAD_R, chartH = H - PAD_T - PAD_B;
     const stepX = chartW / (daysInMonth - 1 || 1);
     const maxIn  = Math.max(1, ...monthDays.filter(d => d.in  > 0).map(d => d.in));
@@ -881,14 +1087,14 @@ async function renderTokens() {
       </div>
       ` : ''}
 
-      <div class="card" style="margin-bottom:16px">
-        <div class="card-title-row" style="margin-bottom:14px">
+      <div class="card" style="margin-bottom:16px;padding:14px 0">
+        <div class="card-title-row" style="margin-bottom:14px;padding:0 22px">
           <div class="card-title"><span class="card-title-icon">◆</span>本月趋势</div>
           <span style="font-size:12px;color:var(--ink-3)">每日 Token</span>
         </div>
         ${barSection}
         ${barLegend}
-        <div style="display:flex;justify-content:space-between;padding:4px 2px 0">
+        <div style="display:flex;justify-content:space-between;padding:4px 22px 0">
           ${(() => {
             const first = monthDays.find(d => d.in + d.out > 0);
             const lastDay = new Date().getDate();
@@ -942,19 +1148,21 @@ async function renderTokens() {
           <span style="font-size:12px;color:var(--ink-3)">${daysInMonth} 天</span>
         </div>
         <div style="overflow-x:auto;-webkit-overflow-scrolling:touch">
-        <table style="width:100%;min-width:500px;border-collapse:collapse;font-size:12px;table-layout:fixed">
+        <table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed">
           <colgroup>
-            <col style="width:90px">
-            <col style="width:70px">
-            <col style="width:70px">
-            <col style="width:60px">
-            <col style="min-width:120px">
+            <col style="width:12%">
+            <col style="width:10%">
+            <col style="width:10%">
+            <col style="width:10%">
+            <col style="width:10%">
+            <col style="width:48%">
           </colgroup>
           <thead><tr style="border-bottom:1px solid var(--border)">
             <th style="text-align:left;padding:8px 10px;color:var(--ink-3);font-weight:500;white-space:nowrap">日期</th>
             <th style="text-align:right;padding:8px 10px;color:var(--ink-3);font-weight:500">输入</th>
             <th style="text-align:right;padding:8px 10px;color:var(--ink-3);font-weight:500">输出</th>
             <th style="text-align:right;padding:8px 10px;color:var(--ink-3);font-weight:500">消息</th>
+            <th style="text-align:right;padding:8px 10px;color:var(--ink-3);font-weight:500">费用</th>
             <th style="text-align:left;padding:8px 10px;color:var(--ink-3);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">模型汇总</th>
           </tr></thead>
           <tbody id="daily-table"></tbody>
@@ -975,6 +1183,12 @@ async function renderTokens() {
     });
 
     const recentDays = monthDays.filter(d => d.in + d.out > 0).slice(-14).reverse();
+    const dayCostMap = {};
+    sessions.forEach(s => {
+      if (!s.started_at) return;
+      const day = s.started_at.slice(0, 10);
+      dayCostMap[day] = (dayCostMap[day] || 0) + (s.cost || 0);
+    });
     $('#daily-table').innerHTML = recentDays.length > 0
       ? recentDays.map(d => {
           const dayModels = dayModelMap[d.day] || {};
@@ -984,15 +1198,17 @@ async function renderTokens() {
             .slice(0, 3)
             .map(([m, v]) => `${m}: ${fmtNum(v.in+v.out)}`);
           const modelSummary = topModels.length > 0 ? topModels.join(' · ') : '—';
+          const dayCost = dayCostMap[d.day] || d.cost || 0;
           return `<tr style="border-bottom:1px solid var(--border)">
             <td style="padding:7px 10px;text-align:left;white-space:nowrap;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis">${d.day}</td>
-            <td style="padding:7px 10px;text-align:right;color:var(--ink-2)">${fmtNum(d.in)}</td>
-            <td style="padding:7px 10px;text-align:right;color:var(--ink-2)">${fmtNum(d.out)}</td>
-            <td style="padding:7px 10px;text-align:right;color:var(--ink-2)">${fmtNum(d.msgs)}</td>
-            <td style="padding:7px 10px;text-align:left;color:var(--ink-3);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${modelSummary}</td>
+            <td style="padding:7px 10px;text-align:right;color:var(--ink-2);font-variant-numeric:tabular-nums">${fmtNum(d.in)}</td>
+            <td style="padding:7px 10px;text-align:right;color:var(--ink-2);font-variant-numeric:tabular-nums">${fmtNum(d.out)}</td>
+            <td style="padding:7px 10px;text-align:right;color:var(--ink-2);font-variant-numeric:tabular-nums">${fmtNum(d.msgs)}</td>
+            <td style="padding:7px 10px;text-align:right;color:var(--ink-2);font-variant-numeric:tabular-nums">${dayCost > 0 ? fmtCost(dayCost) : '—'}</td>
+            <td style="padding:7px 10px;text-align:left;color:var(--ink-3);font-size:11px;word-break:break-all;line-height:1.4">${modelSummary}</td>
           </tr>`;
         }).join('')
-      : '<tr><td colspan="5" style="padding:12px;text-align:center;color:var(--ink-3);font-size:13px">本月暂无数据</td></tr>';
+      : '<tr><td colspan="6" style="padding:12px;text-align:center;color:var(--ink-3);font-size:13px">本月暂无数据</td></tr>';
 
   } catch (e) {
     $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
@@ -1035,10 +1251,10 @@ function renderCronList(jobs) {
         try {
           if (action === 'delete') {
             if (!confirm('确认删除此任务？')) return;
-            const r = await fetch(`${API}/cron/${id}`, { method: 'DELETE' }).then(r => r.json());
+            const r = await fetch(`${API}/cron/${id}`, { method: 'DELETE', headers: authHeaders() }).then(r => r.json());
             if (r.ok) { toast('已删除', 'success'); renderCron(); } else toast('删除失败: ' + (r.error || ''), 'error');
           } else {
-            const r = await fetch(`${API}/cron/${id}/${action}`, { method: 'POST' }).then(r => r.json());
+            const r = await fetch(`${API}/cron/${id}/${action}`, { method: 'POST', headers: authHeaders() }).then(r => r.json());
             if (r.ok) { toast(action === 'pause' ? '已暂停' : action === 'resume' ? '已恢复' : '已触发', 'success'); renderCron(); }
             else toast('操作失败: ' + (r.error || ''), 'error');
           }
@@ -1080,99 +1296,273 @@ function buildCronCardHTML(j) {
 
 
 
-/* ─── RENDER: Models ─────────────────────────────────────────────── */
+/* ─── RENDER: Models (Liquid Glass Hero + Switch) ────────────────────── */
 async function renderModels() {
-  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div></div>';
+  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div>加载模型列表…</div>';
   try {
-    const [provData, modelData] = await Promise.all([api('/providers'), api('/models')]);
+    const [provData, modelData, cfgData] = await Promise.all([
+      api('/providers'),
+      api('/models'),
+      api('/config/model'),
+    ]);
     const providers = provData.providers || [];
-    const models = modelData.models || [];
-    const defaultProv = providers.find(p => p.is_default);
-    const activeProv = providers.find(p => p.status === 'active');
+    const models    = modelData.models || [];
+    const cfgProvider = cfgData.provider || '';
+    const cfgModel    = cfgData.model || '';
+    const cfgUrl      = cfgData.base_url || '';
+    const cfgKey      = cfgData.api_key || '';
 
     // Group models by provider
     const byProvider = {};
-    models.forEach(m => { const prov = m.provider || 'unknown'; if (!byProvider[prov]) byProvider[prov] = []; byProvider[prov].push(m); });
+    models.forEach(m => { const p = m.provider || 'unknown'; if (!byProvider[p]) byProvider[p] = []; byProvider[p].push(m); });
 
-    const provOrder = ['minimax-cn', 'xiaomi', 'openrouter', 'anthropic', 'unknown'];
+    // Find active provider info
+    const activeProv = providers.find(p => p.name === cfgProvider) || providers.find(p => p.is_default) || providers[0];
+
+    // ─── Hero: current model ───
+    const statusText = { active: '在线', error: '错误', offline: '离线' };
+    const statusClass = activeProv ? (activeProv.status === 'active' ? 'online' : activeProv.status === 'error' ? 'error' : 'offline') : 'offline';
+
+    const heroHtml = `
+      <div class="card" style="position:relative;overflow:hidden">
+        <div style="display:flex;flex-direction:column;align-items:center;text-align:center;padding:28px 24px 20px;gap:4px">
+          <div style="font-size:44px;margin-bottom:4px">🤖</div>
+          <div style="font-size:22px;font-weight:700;color:var(--ink);letter-spacing:-0.3px">${escapeHtml(cfgModel || '—')}</div>
+          <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
+            <span style="font-size:13px;color:var(--ink-3)">Provider</span>
+            <span style="font-size:13px;font-weight:600;color:var(--ink-2)">${escapeHtml(cfgProvider || '—')}</span>
+          </div>
+          ${cfgUrl ? `<div style="display:flex;align-items:center;gap:6px;margin-top:2px">
+            <span style="font-size:11px;color:var(--ink-3)">Base URL</span>
+            <span style="font-size:11px;color:var(--ink-2);font-family:var(--font-mono);max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(cfgUrl)}</span>
+          </div>` : ''}
+          <div style="display:flex;gap:6px;margin-top:8px">
+            <span style="font-size:11px;font-weight:600;padding:2px 10px;border-radius:9999px;border:1px solid ${statusClass === 'online' ? '#34c759' : statusClass === 'error' ? '#ff3b30' : 'var(--border-1)'};color:${statusClass === 'online' ? '#34c759' : statusClass === 'error' ? '#ff3b30' : 'var(--ink-3)'}">${statusText[activeProv?.status] || '未知'}</span>
+            ${activeProv?.is_default ? '<span style="font-size:11px;font-weight:600;padding:2px 10px;border-radius:9999px;border:1px solid var(--blue);color:var(--blue)">默认</span>' : ''}
+          </div>
+          <button class="btn btn-primary" style="margin-top:14px;padding:9px 28px;border-radius:9999px;font-size:14px;font-weight:600" id="cm-switch-btn">⚡ 切换模型</button>
+        </div>
+      </div>`;
+
+    // ─── Switch panel (hidden by default) ───
+    const allChips = [...providers.map(p => ({
+      name: p.name,
+      label: p.name.startsWith('custom:') ? p.name.split(':')[1] : p.name,
+      url: p.base_url || '',
+    })), { name: 'custom', label: '自定义', url: '' }];
+
+    const switchHtml = `
+      <div class="card" id="cm-switch-panel" style="display:none;margin-bottom:16px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--border-1)">
+          <span style="color:var(--blue);font-size:12px">◆</span>
+          <span style="font-size:14px;font-weight:600;color:var(--ink)">切换模型</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div style="display:flex;align-items:center;gap:12px">
+            <label style="width:80px;flex-shrink:0;font-size:13px;font-weight:500;color:var(--ink-2)">Provider</label>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;flex:1" id="ms-prov-chips">
+              ${allChips.map(p => `<button class="btn" data-prov="${escapeHtml(p.name)}" style="padding:5px 14px;border-radius:9999px;font-size:12px;border:1px solid ${p.name === cfgProvider ? 'var(--blue)' : 'var(--border-1)'};background:${p.name === cfgProvider ? 'var(--blue)' : 'transparent'};color:${p.name === cfgProvider ? '#fff' : 'var(--ink-2)'};font-weight:500;cursor:pointer;transition:all 0.15s">${escapeHtml(p.label)}</button>`).join('')}
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px" id="ms-model-row">
+            <label style="width:80px;flex-shrink:0;font-size:13px;font-weight:500;color:var(--ink-2)">模型</label>
+            <select id="ms-model-select" style="flex:1;height:36px;padding:0 10px;border-radius:10px;border:1px solid var(--border-1);background:var(--surface-2);color:var(--ink);font-size:13px;appearance:none;-webkit-appearance:none;background-image:url(&quot;data:image/svg+xml,%3Csvg xmlns=&quot;http://www.w3.org/2000/svg&quot; width=&quot;12&quot; height=&quot;12&quot; viewBox=&quot;0 0 12 12&quot;%3E%3Cpath fill=&quot;%238e8e93&quot; d=&quot;M6 8L1 3h10z&quot;/%3E%3C/svg%3E&quot;);background-repeat:no-repeat;background-position:right 10px center;padding-right:30px">
+              <option value="">— 选择模型 —</option>
+            </select>
+            <input id="ms-model-input" type="text" placeholder="手动输入模型名称" style="flex:1;height:36px;padding:0 10px;border-radius:10px;border:1px solid var(--border-1);background:var(--surface-2);color:var(--ink);font-size:13px;display:none" />
+          </div>
+          <div style="display:flex;align-items:center;gap:12px">
+            <label style="width:80px;flex-shrink:0;font-size:13px;font-weight:500;color:var(--ink-2)">Base URL</label>
+            <input id="ms-base-url" type="text" placeholder="https://api.example.com/v1" value="${escapeHtml(cfgUrl)}" style="flex:1;height:36px;padding:0 10px;border-radius:10px;border:1px solid var(--border-1);background:var(--surface-2);color:var(--ink);font-size:13px" />
+          </div>
+          <div style="display:flex;align-items:center;gap:12px">
+            <label style="width:80px;flex-shrink:0;font-size:13px;font-weight:500;color:var(--ink-2)">API Key</label>
+            <input id="ms-api-key" type="password" placeholder="输入 API Key（留空不改）" style="flex:1;height:36px;padding:0 10px;border-radius:10px;border:1px solid var(--border-1);background:var(--surface-2);color:var(--ink);font-size:13px" />
+          </div>
+          <div style="display:flex;gap:8px;margin-top:4px">
+            <button class="btn btn-primary" id="ms-save-btn" style="border-radius:9999px;padding:8px 24px;font-weight:600">保存并应用</button>
+            <button class="btn btn-secondary" id="ms-cancel-btn" style="border-radius:9999px;padding:8px 20px">取消</button>
+          </div>
+        </div>
+      </div>`;
+
+    // ─── Model grid by provider ───
+    const provOrder = ['xiaomi', 'minimax-cn', 'openrouter', 'anthropic'];
     const sortedProvs = Object.keys(byProvider).sort((a, b) => {
       const ai = provOrder.indexOf(a), bi = provOrder.indexOf(b);
       return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
     });
 
-    const currentModel = activeProv ? byProvider[activeProv.name]?.[0] : defaultProv ? byProvider[defaultProv.name]?.[0] : models[0];
-
-    $('#app').innerHTML = `
-      <div class="card current-model-hero">
-        <div class="cm-hero-icon">🤖</div>
-        <div class="cm-hero-name">${escapeHtml(currentModel?.id || '—')}</div>
-        <div class="cm-hero-provider">via ${escapeHtml(activeProv?.name || defaultProv?.name || '—')}</div>
-        ${activeProv?.base_url ? `<div class="cm-hero-url">${escapeHtml(activeProv.base_url)}</div>` : ''}
-        <div class="cm-hero-tags">
-          ${providers.find(p => p.name === (activeProv?.name || defaultProv?.name))?.is_default ? '<span class="cm-tag">默认</span>' : ''}
-          <span class="cm-tag cm-tag-${providers.find(p => p.name === (activeProv?.name || defaultProv?.name))?.status || 'offline'}">${providers.find(p => p.name === (activeProv?.name || defaultProv?.name))?.status === 'active' ? '在线' : providers.find(p => p.name === (activeProv?.name || defaultProv?.name))?.status === 'error' ? '错误' : '离线'}</span>
+    const modelGridHtml = sortedProvs.map(prov => `
+      <div style="margin-bottom:20px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <span style="width:8px;height:8px;border-radius:50%;background:${providers.find(p => p.name === prov)?.status === 'active' ? '#34c759' : 'var(--ink-3)'}"></span>
+          <span style="font-size:12px;font-weight:600;color:var(--ink-2);text-transform:uppercase;letter-spacing:0.04em">${escapeHtml(prov)}</span>
+          <span style="font-size:11px;color:var(--ink-3);background:var(--surface-2);padding:1px 8px;border-radius:9999px">${(byProvider[prov] || []).length}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px">
+          ${(byProvider[prov] || []).map(m => {
+            const isActive = m.id === cfgModel;
+            return `<div style="padding:12px 14px;border-radius:var(--radius-md);border:1px solid ${isActive ? 'var(--blue)' : 'var(--glass-border)'};background:${isActive ? 'var(--blue-dim)' : 'var(--glass-2)'};cursor:pointer;transition:all 0.15s" class="model-card-grid" data-model="${escapeHtml(m.id)}" data-provider="${escapeHtml(prov)}">
+              <div style="display:flex;align-items:center;gap:10px">
+                <div style="width:32px;height:32px;border-radius:8px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:var(--blue);flex-shrink:0">${escapeHtml(m.id.charAt(0).toUpperCase())}</div>
+                <div style="min-width:0;flex:1">
+                  <div style="font-size:13px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(m.id)}</div>
+                  ${m.owned_by ? `<div style="font-size:11px;color:var(--ink-3);margin-top:1px">${escapeHtml(m.owned_by)}</div>` : ''}
+                </div>
+                ${isActive ? '<span style="font-size:10px;font-weight:600;color:var(--blue);background:var(--blue-dim);padding:1px 6px;border-radius:9999px;flex-shrink:0">当前</span>' : ''}
+              </div>
+            </div>`;
+          }).join('')}
         </div>
       </div>
+    `).join('');
 
+    // ─── Assemble page ───
+    $('#app').innerHTML = heroHtml + switchHtml + `
       <div class="card" style="margin-bottom:16px">
-        <div class="card-title-row" style="margin-bottom:14px">
-          <div class="card-title"><span class="card-title-icon">◆</span>所有模型</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="color:var(--blue);font-size:12px">◆</span>
+            <span style="font-size:14px;font-weight:600;color:var(--ink)">所有模型</span>
+          </div>
           <span style="font-size:12px;color:var(--ink-3)">${sortedProvs.length} 个 Provider · ${models.length} 个模型</span>
         </div>
-        ${sortedProvs.map(prov => `
-          <div class="model-provider-section" style="margin-bottom:${sortedProvs.indexOf(prov) < sortedProvs.length - 1 ? '20px' : '0'}">
-            <div class="model-provider-header">
-              <span class="model-provider-dot" style="background:${providers.find(p=>p.name===prov)?.status === 'active' ? '#34c759' : 'var(--ink-3)'}"></span>
-              <span class="model-provider-name">${escapeHtml(prov)}</span>
-            </div>
-            <div class="model-grid">
-              ${(byProvider[prov] || []).map(m => `
-                <div class="model-card-grid" data-model="${escapeHtml(m.id)}" data-provider="${escapeHtml(prov)}">
-                  <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
-                    <div style="width:32px;height:32px;border-radius:8px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0">${escapeHtml(m.id.charAt(0).toUpperCase())}</div>
-                    <div style="min-width:0;flex:1">
-                      <div class="model-name" style="font-size:14px;font-weight:600">${escapeHtml(m.id)}</div>
-                      ${m.owned_by ? `<div style="font-size:11px;color:var(--ink-3);margin-top:1px">${escapeHtml(m.owned_by)}</div>` : ''}
-                    </div>
-                  </div>
-                  <div style="display:flex;gap:6px;flex-wrap:wrap">
-                    <span style="font-size:11px;color:var(--ink-2);background:var(--surface-2);padding:2px 8px;border-radius:9999px">${escapeHtml(m.provider || prov)}</span>
-                  </div>
-                </div>`).join('')}
-            </div>
-          </div>`).join('')}
-        ${!models.length ? '<div style="text-align:center;padding:32px 0;color:var(--ink-3);font-size:13px">暂无可用模型</div>' : ''}
-      </div>
-
-      <div class="card">
-        <div class="card-title-row" style="margin-bottom:14px">
-          <div class="card-title"><span class="card-title-icon">◆</span>Provider 状态</div>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:8px">
-          ${providers.length ? providers.map(p => `
-            <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface-2);border-radius:12px" class="prov-row">
-              <div style="width:8px;height:8px;border-radius:50%;flex-shrink:0;background:${p.status === 'active' ? '#34c759' : p.status === 'error' ? '#ff3b30' : '#8e8e93'}"></div>
-              <div style="flex:1;min-width:0">
-                <div style="font-size:13px;font-weight:500;color:var(--ink)">${escapeHtml(p.name)}</div>
-                <div style="font-size:11px;color:var(--ink-3);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.base_url || '')}</div>
-              </div>
-              ${p.is_default ? '<span class="badge-active">默认</span>' : ''}
-              <span style="font-size:11px;color:var(--ink-2)">${p.status}</span>
-            </div>`).join('') : '<div style="text-align:center;padding:20px 0;color:var(--ink-3);font-size:13px">暂无 Provider</div>'}
-        </div>
+        ${modelGridHtml || '<div style="text-align:center;padding:32px 0;color:var(--ink-3);font-size:13px">暂无可用模型</div>'}
       </div>`;
 
-    // Add hover states for model cards
+    // ─── Event bindings ───
+    // Toggle switch panel
+    $('#cm-switch-btn').addEventListener('click', () => {
+      const panel = $('#cm-switch-panel');
+      const btn   = $('#cm-switch-btn');
+      if (panel.style.display === 'none') {
+        panel.style.display = 'block';
+        btn.textContent = '✕ 收起';
+      } else {
+        panel.style.display = 'none';
+        btn.textContent = '⚡ 切换模型';
+      }
+    });
+
+    // Provider chip selection
+    let selectedProv = cfgProvider || '';
+    $('#ms-prov-chips').addEventListener('click', (e) => {
+      const chip = e.target.closest('[data-prov]');
+      if (!chip) return;
+      selectedProv = chip.dataset.prov;
+      const isCustom = selectedProv === 'custom';
+      // Update chip styles
+      $('#ms-prov-chips').querySelectorAll('button').forEach(b => {
+        b.style.background = b.dataset.prov === selectedProv ? 'var(--blue)' : 'transparent';
+        b.style.borderColor = b.dataset.prov === selectedProv ? 'var(--blue)' : 'var(--border-1)';
+        b.style.color = b.dataset.prov === selectedProv ? '#fff' : 'var(--ink-2)';
+      });
+      // Update base_url
+      const provInfo = allChips.find(p => p.name === selectedProv);
+      $('#ms-base-url').value = provInfo ? provInfo.url : '';
+      // Show model select or input
+      const provModels = byProvider[selectedProv] || [];
+      const modelSel = $('#ms-model-select');
+      const modelInp = $('#ms-model-input');
+      if (isCustom || !provModels.length) {
+        modelSel.style.display = 'none';
+        modelInp.style.display = '';
+        modelInp.value = '';
+      } else {
+        modelSel.innerHTML = provModels.map(m => '<option value="' + escapeHtml(m.id) + '">' + escapeHtml(m.id) + '</option>').join('');
+        modelSel.style.display = '';
+        modelInp.style.display = 'none';
+      }
+    });
+
+    // Init model list for current provider
+    (function initModelList() {
+      const provModels = byProvider[cfgProvider] || [];
+      const modelSel = $('#ms-model-select');
+      const modelInp = $('#ms-model-input');
+      if (provModels.length) {
+        modelSel.innerHTML = provModels.map(m => '<option value="' + escapeHtml(m.id) + '">' + escapeHtml(m.id) + '</option>').join('');
+        if (cfgModel) modelSel.value = cfgModel;
+        modelSel.style.display = '';
+        modelInp.style.display = 'none';
+      } else {
+        modelSel.style.display = 'none';
+        modelInp.style.display = '';
+        modelInp.value = cfgModel;
+      }
+    })();
+
+    // Cancel
+    $('#ms-cancel-btn').addEventListener('click', () => {
+      $('#cm-switch-panel').style.display = 'none';
+      $('#cm-switch-btn').textContent = '⚡ 切换模型';
+    });
+
+    // Save — POST to /api/config/model
+    $('#ms-save-btn').addEventListener('click', async () => {
+      const btn = $('#ms-save-btn');
+      btn.disabled = true;
+      btn.textContent = '保存中…';
+      const model = $('#ms-model-select').style.display !== 'none'
+        ? $('#ms-model-select').value.trim()
+        : $('#ms-model-input').value.trim();
+      try {
+        const res = await fetch(API + '/config/model', {
+          method: 'POST',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            provider: selectedProv,
+            base_url: $('#ms-base-url').value.trim(),
+            api_key: $('#ms-api-key').value.trim(),
+            model: model,
+          }),
+        }).then(r => r.json());
+        if (res.error) throw new Error(res.error);
+        // Broadcast model change so dashboard/quota can refresh
+        window.dispatchEvent(new CustomEvent('model-changed', { detail: { provider: selectedProv, model } }));
+        toast('模型已切换: ' + model, 'success');
+        // Refresh the page after short delay
+        setTimeout(() => renderModels(), 1200);
+      } catch (e) {
+        toast('保存失败: ' + e.message, 'error');
+        btn.disabled = false;
+        btn.textContent = '保存并应用';
+      }
+    });
+
+    // Model card click → select as active
     document.querySelectorAll('.model-card-grid').forEach(card => {
-      card.addEventListener('mouseenter', () => { card.style.transform = 'translateY(-2px)'; card.style.boxShadow = 'var(--shadow-lift)'; card.style.borderColor = 'var(--blue)'; });
-      card.addEventListener('mouseleave', () => { card.style.transform = ''; card.style.boxShadow = ''; card.style.borderColor = ''; });
+      card.addEventListener('click', () => {
+        const modelId = card.dataset.model;
+        const provId  = card.dataset.provider;
+        // Trigger provider chip click
+        const chip = $('#ms-prov-chips').querySelector('[data-prov="' + provId + '"]');
+        if (chip) chip.click();
+        // Set model value
+        const modelSel = $('#ms-model-select');
+        const modelInp = $('#ms-model-input');
+        if (modelSel.style.display !== 'none') {
+          modelSel.value = modelId;
+        } else {
+          modelInp.value = modelId;
+        }
+        // Auto-open switch panel
+        const panel = $('#cm-switch-panel');
+        if (panel.style.display === 'none') {
+          panel.style.display = 'block';
+          $('#cm-switch-btn').textContent = '✕ 收起';
+        }
+        // Scroll to switch panel
+        panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
     });
 
   } catch (e) {
-    $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
+    $('#app').innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">' + escapeHtml(e.message) + '</div></div>';
   }
 }
-
 
 
 /* ─── RENDER: Skills ─────────────────────────────────────────────── */
@@ -1424,7 +1814,7 @@ function renderLogsViewer(logFiles) {
     if (currentLevel) params.set('level', currentLevel);
     if (currentKw) params.set('keyword', currentKw);
     api('/logs?' + params.toString()).then(data => {
-      const lines = data.lines || [];
+      const lines = (data.lines || []).reverse();
       $('#log-content').innerHTML = lines.length
         ? lines.map(line => {
             let cls = 'log-line';
@@ -1559,7 +1949,7 @@ function showModal(type, extra) {
         if (name) body.name = name;
         if (prompt) body.prompt = prompt;
         if (deliver) body.deliver = deliver;
-        const r = await fetch('/api/cron', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+        const r = await fetch('/api/cron', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
         if (r.ok) { toast('任务已创建', 'success'); overlay.remove(); renderCron(); }
         else toast('创建失败: ' + (r.error || ''), 'error');
       } catch (e) { toast(e.message, 'error'); }
@@ -1585,37 +1975,227 @@ function toggleTheme() {
 }
 
 /* ─── Init ────────────────────────────────────────────────────────── */
-function handleHash() {
+let _authChecked = false;
+let _navigating = false;  // guard against re-entrant handleHash from hashchange
+async function handleHash() {
   const raw = window.location.hash.slice(1);
-  const hash = raw.split('?')[0] || 'dashboard';
+  // Priority: URL hash > sessionStorage > default 'dashboard'
+  const hash = raw.split('?')[0] || sessionStorage.getItem('hermes-page') || 'dashboard';
+  // Sync hash in URL if it was empty (so refresh keeps the page)
+  // Use _navigating guard to prevent the hashchange triggered below from re-entering
+  if (!raw) {
+    _navigating = true;
+    window.location.hash = hash;
+    _navigating = false;
+  }
   $$('.dk').forEach(el => el.classList.remove('active'));
   const dk = $(`.dk[data-page="${hash}"]`);
   if (dk) dk.classList.add('active');
+  const authed = await initAuth();  // wait for auth
+  if (!authed) return;
+  _authChecked = true;
   navigate(hash);
 }
-window.addEventListener('hashchange', handleHash);
+window.addEventListener('hashchange', () => { if (!_navigating) handleHash(); });
 
-// Reliable hash persistence across refresh via sessionStorage.
-// On bfcache restore: browser restores URL (including hash) before pageshow fires,
-// so we just re-run handleHash() to sync DOM.
-// On full reload: URL is restored by browser, but sessionStorage survives
-// and we re-apply handleHash() anyway — harmless redundancy.
 window.addEventListener('pageshow', e => {
   if (e.persisted) handleHash();
 });
 
-// Restore page from sessionStorage on init (handles mobile browsers where
-// location.hash is lost or ignored on refresh, bfcache clears it, etc.)
-const savedPage = sessionStorage.getItem('hermes-page');
-if (savedPage && (window.location.hash === '' || window.location.hash === '#')) {
-  window.location.hash = savedPage;
-} else if (savedPage && window.location.hash !== '#' + savedPage) {
-  window.location.hash = savedPage;
-} else {
-  handleHash();
+/* ─── Auth Init ─────────────────────────────────────────────────────── */
+async function initAuth() {
+  applyTheme(getPreferredTheme());
+  $('#theme-toggle').addEventListener('click', toggleTheme);
+  try {
+    const sess = await fetch(API + '/auth/session', { headers: authHeaders(), credentials: 'include' }).then(r => r.json());
+    if (sess.logged_in) {
+      currentUser = sess;
+      $('#login-overlay').style.display = 'none';
+      return true;  // authenticated
+    }
+    // Token existed but is invalid — clear it and show login
+    if (getToken()) { setToken(''); window.location.reload(); return false; }
+  } catch { }
+  showLogin();
+  return false;  // not authenticated
 }
-applyTheme(getPreferredTheme());
-$('#theme-toggle').addEventListener('click', toggleTheme);
+
+async function doLogin() {
+  const u = $('#li-username').value.trim();
+  const p = $('#li-password').value;
+  const err = $('#li-error');
+  err.style.display = 'none';
+  try {
+    const res = await fetch(API + '/auth/login', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: u, password: p })
+    }).then(r => r.json());
+    if (res.ok) {
+      setToken(res.token || '');  // store token in localStorage
+      showApp(res);
+    } else {
+      err.textContent = res.error || '登录失败';
+      err.style.display = 'block';
+    }
+  } catch (e) {
+    err.textContent = '网络错误';
+    err.style.display = 'block';
+  }
+}
+
+async function doLogout() {
+  await fetch(API + '/auth/logout', { method: 'POST', headers: authHeaders(), credentials: 'include' });
+  setToken('');  // clear localStorage token
+  sessionStorage.removeItem('hermes-page');  // clear stale page state
+  currentUser = null;
+  showLogin();
+}
+
+/* ─── Show login form ─────────────────────────────────────────────────── */
+function showLogin() {
+  setToken('');
+  $('#login-overlay').style.display = 'flex';
+  $('#app').innerHTML = '';
+  $('#li-username').value = '';
+  $('#li-password').value = '';
+  $('#li-error').style.display = 'none';
+  $('#li-submit').onclick = doLogin;
+  $('#li-password').onkeydown = e => { if (e.key === 'Enter') doLogin(); };
+}
+
+/* ─── Post-login: show main UI ─────────────────────────────────────────── */
+function showApp(res) {
+  currentUser = { user_id: res.user_id, username: res.username, is_admin: res.is_admin };
+  $('#login-overlay').style.display = 'none';
+  // After login, go to dashboard (fresh login = start at home)
+  const target = 'dashboard';
+  sessionStorage.setItem('hermes-page', target);
+  window.location.hash = target;
+  $$('.dk').forEach(el => el.classList.remove('active'));
+  const dk = $(`.dk[data-page="${target}"]`);
+  if (dk) dk.classList.add('active');
+  navigate(target);
+}
+
+/* ─── Avatar Menu (Dock Expansion) ──────────────────────────────── */
+let rightDockExpanded = false;
+
+function toggleRightDock() {
+  const dock = $('#topdock-right');
+  const controls = $('#right-controls-expanded');
+  rightDockExpanded = !rightDockExpanded;
+  if (rightDockExpanded) {
+    dock.classList.add('expanded');
+    // Animate controls in
+    requestAnimationFrame(() => {
+      controls.style.opacity = '1';
+      controls.style.transform = 'translateX(0)';
+    });
+  } else {
+    controls.style.opacity = '0';
+    controls.style.transform = 'translateX(12px)';
+    setTimeout(() => dock.classList.remove('expanded'), 300);
+  }
+}
+
+$('#avatar-btn').addEventListener('click', e => {
+  e.stopPropagation();
+  toggleRightDock();
+});
+
+document.addEventListener('click', e => {
+  if (rightDockExpanded && !$('#right-controls-expanded').contains(e.target) && !$('#avatar-btn').contains(e.target)) {
+    toggleRightDock();
+  }
+});
+
+/* ─── Account Page ─────────────────────────────────────────────────── */
+async function renderAccount() {
+  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div>加载中…</div>';
+  let accounts = [];
+  let isAdmin = currentUser && currentUser.is_admin;
+
+  if (isAdmin) {
+    try { accounts = await api('/auth/accounts'); } catch {}
+  }
+
+  const rows = accounts.map(a => `
+    <div class="acc-row">
+      <div class="acc-info">
+        <div class="acc-name">${escHtml(a.username)}</div>
+        <div class="acc-meta">${a.is_admin ? '管理员' : '普通用户'} · ${a.created_at}</div>
+      </div>
+      <div class="acc-actions">
+        <button class="acc-btn" onclick="resetAccPwd(${a.id}, '${escHtml(a.username)}')">改密码</button>
+        ${a.id !== currentUser.user_id ? `<button class="acc-btn danger" onclick="delAcc(${a.id})">删除</button>` : ''}
+      </div>
+    </div>`).join('');
+
+  $('#app').innerHTML = `
+    <div class="acc-page">
+      <div class="page-title-row">
+        <div class="page-title">账号管理</div>
+      </div>
+      <div class="card" style="padding:24px;">
+        <div class="acc-current">
+          <div class="acc-current-label">当前登录</div>
+          <div class="acc-current-name">${escHtml(currentUser.username)} <span class="acc-badge">${currentUser.is_admin ? '管理员' : '普通用户'}</span></div>
+        </div>
+        ${isAdmin ? `
+        <div class="acc-list">${rows || '<div style="color:var(--ink-3);font-size:13px;padding:12px 0;">暂无其他账号</div>'}</div>
+        <div class="acc-add">
+          <div class="acc-add-title">添加账号</div>
+          <div class="acc-add-form">
+            <input class="search-input" id="acc-new-user" type="text" placeholder="用户名" style="width:160px;" />
+            <input class="search-input" id="acc-new-pass" type="password" placeholder="密码（≥6位）" style="width:160px;" />
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;">
+              <input id="acc-new-admin" type="checkbox" style="width:14px;height:14px;" /> 管理员
+            </label>
+            <button class="btn btn-primary" id="acc-add-btn">添加</button>
+          </div>
+        </div>` : ''}
+      </div>
+    </div>`;
+
+  if (isAdmin) {
+    $('#acc-add-btn').onclick = async () => {
+      const u = $('#acc-new-user').value.trim();
+      const p = $('#acc-new-pass').value;
+      const admin = $('#acc-new-admin').checked;
+      if (!u || p.length < 6) { toast('用户名至少2字符，密码至少6字符'); return; }
+      const res = await fetch(API + '/auth/accounts', {
+        method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: u, password: p, is_admin: admin })
+      }).then(r => r.json()).catch(() => ({ error: '网络错误' }));
+      if (res.error) { toast(res.error); return; }
+      toast('账号已添加');
+      renderAccount();
+    };
+  }
+}
+
+window.resetAccPwd = async (id, username) => {
+  const p = prompt(`为 ${username} 设置新密码（≥6位）：`);
+  if (!p || p.length < 6) { if (p !== null) toast('密码至少6位'); return; }
+  const res = await fetch(API + '/auth/accounts/password', {
+    method: 'PUT', headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, password: p })
+  }).then(r => r.json()).catch(() => ({ error: '网络错误' }));
+  if (res.error) toast(res.error); else toast('密码已更新');
+};
+
+window.delAcc = async (id) => {
+  if (!confirm('确定删除该账号？')) return;
+  const res = await fetch(API + '/auth/accounts/' + id, {
+    method: 'DELETE', headers: authHeaders(), credentials: 'include'
+  }).then(r => r.json()).catch(() => ({ error: '网络错误' }));
+  if (res.error) toast(res.error); else { toast('已删除'); renderAccount(); }
+};
+
+/* ─── Start ────────────────────────────────────────────────────────── */
+handleHash();  // initial load → auth check + navigate
 
 </script>
 </body>

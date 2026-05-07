@@ -12,56 +12,88 @@ BACKEND_PORT = 3801
 FRONTEND_PORT = 3800
 
 class Proxy(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path.startswith("/api/"):
-            # Proxy to backend
-            url = f"http://127.0.0.1:{BACKEND_PORT}{self.path}"
-            try:
-                req = urllib.request.Request(url)
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    data = resp.read()
-                    self.send_response(resp.status)
-                    self.send_header("Content-Type", "application/json")
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self.end_headers()
-                    self.wfile.write(data)
-            except urllib.error.URLError as e:
-                self.send_error(502, f"Backend error: {e}")
-        elif self.path == "/" or self.path == "/index.html":
-            self.serve_index()
-        elif self.path.startswith("/css/") or self.path.startswith("/js/"):
-            # Static files
-            self.serve_static(self.path)
-        else:
-            # SPA fallback
-            self.serve_index()
-
-    def do_POST(self):
+    def _proxy(self, method):
         if self.path.startswith("/api/"):
             url = f"http://127.0.0.1:{BACKEND_PORT}{self.path}"
             content_len = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_len) if content_len else b""
+
+            # Build headers to forward (including Cookie + Authorization for credentials)
+            fwd_headers = {"Content-Type": self.headers.get("Content-Type", "application/json")}
+            cookie = self.headers.get("Cookie")
+            if cookie:
+                fwd_headers["Cookie"] = cookie
+            auth = self.headers.get("Authorization")
+            if auth:
+                fwd_headers["Authorization"] = auth
+            origin = self.headers.get("Origin") or self.headers.get("Referer", "")
+            if origin:
+                # Strip path to get origin
+                from urllib.parse import urlparse
+                parsed = urlparse(origin)
+                fwd_headers["Origin"] = f"{parsed.scheme}://{parsed.netloc}"
+
             try:
-                req = urllib.request.Request(url, data=body,
-                    headers={"Content-Type": "application/json"},
-                    method="POST")
+                req = urllib.request.Request(url, data=body, headers=fwd_headers, method=method)
                 with urllib.request.urlopen(req, timeout=15) as resp:
                     data = resp.read()
                     self.send_response(resp.status)
                     self.send_header("Content-Type", "application/json")
-                    self.send_header("Access-Control-Allow-Origin", "*")
+
+                    # Forward Set-Cookie from backend so browser stores session cookie
+                    sc = resp.headers.get("Set-Cookie")
+                    if sc:
+                        self.send_header("Set-Cookie", sc)
+
+                    # CORS: allow credentials when browser sends origin
+                    allow_origin = fwd_headers.get("Origin", "*")
+                    self.send_header("Access-Control-Allow-Origin", allow_origin)
+                    self.send_header("Access-Control-Allow-Credentials", "true")
+                    self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+                    self.send_header("Access-Control-Allow-Headers",
+                                     "Content-Type, Cookie, Authorization, X-Requested-With")
                     self.end_headers()
                     self.wfile.write(data)
             except urllib.error.URLError as e:
-                self.send_error(502, f"Backend error: {e}")
+                self.send_error(502, "Backend error: %s" % e)
+
+    def do_GET(self):
+        if self.path.startswith("/api/"):
+            self._proxy("GET")
+        elif self.path == "/" or self.path == "/index.html":
+            self.serve_index()
+        elif self.path.startswith("/css/") or self.path.startswith("/js/"):
+            self.serve_static(self.path)
+        else:
+            self.serve_index()
+
+    def do_POST(self):
+        if self.path.startswith("/api/"):
+            self._proxy("POST")
+        else:
+            self.send_error(404)
+
+    def do_PUT(self):
+        if self.path.startswith("/api/"):
+            self._proxy("PUT")
+        else:
+            self.send_error(404)
+
+    def do_DELETE(self):
+        if self.path.startswith("/api/"):
+            self._proxy("DELETE")
         else:
             self.send_error(404)
 
     def do_OPTIONS(self):
+        origin = self.headers.get("Origin") or "*"
         self.send_response(200)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Credentials", "true")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers",
+                         "Content-Type, Cookie, Authorization, X-Requested-With")
+        self.send_header("Access-Control-Max-Age", "86400")
         self.end_headers()
 
     def serve_index(self):

@@ -21,8 +21,10 @@ except AttributeError:
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from functools import wraps
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, session
 from flask_cors import CORS
+from werkzeug.security import generate_password_hash, check_password_hash
+import uuid
 
 # Reusable +08:00 timezone
 UTC8 = timezone(timedelta(hours=8))
@@ -36,7 +38,129 @@ SKILLS_DIR = os.path.join(HERMES_HOME, "skills")
 GATEWAY_PID_FILE = os.path.join(HERMES_HOME, "gateway.pid")
 
 app = Flask(__name__, static_folder=None)
-CORS(app)
+app.secret_key = os.environ.get("DASHBOARD_SECRET", os.urandom(32).hex())
+CORS(app, supports_credentials=True)
+
+# ─── Auth ────────────────────────────────────────────────────────────────────
+ACCOUNTS_DB_PATH = os.path.join(HERMES_HOME, "dashboard_auth.db")
+
+# In-memory brute-force protection: {ip: [(ts, ok), ...]}
+BRUTE_FORCE = {}   # noqa: F811
+MAX_ATTEMPTS = 5
+LOCKOUT_SECS = 300
+
+def init_auth_db():
+    """Create accounts table if not exists."""
+    with sqlite3.connect(ACCOUNTS_DB_PATH) as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS accounts (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                username  TEXT    UNIQUE NOT NULL,
+                password  TEXT    NOT NULL,
+                is_admin  INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT   NOT NULL DEFAULT (datetime('now','localtime'))
+            )
+        """)
+        db.commit()
+    # Auto-create default admin if no accounts exist
+    with sqlite3.connect(ACCOUNTS_DB_PATH) as db:
+        row = db.execute("SELECT COUNT(*) FROM accounts").fetchone()
+        if row[0] == 0:
+            pw_hash = generate_password_hash("admin")
+            db.execute("INSERT INTO accounts (username, password, is_admin) VALUES (?, ?, 1)",
+                       ("admin", pw_hash))
+            db.commit()
+
+def check_brute(ip):
+    """Return True if IP is locked out."""
+    now = time.time()
+    window = BRUTE_FORCE.get(ip, [])
+    # Keep only attempts in last LOCKOUT_SECS
+    window = [(ts, ok) for ts, ok in window if now - ts < LOCKOUT_SECS]
+    BRUTE_FORCE[ip] = window
+    failures = sum(1 for ts, ok in window if not ok)
+    return failures >= MAX_ATTEMPTS
+
+def record_attempt(ip, ok):
+    """Log a login attempt."""
+    BRUTE_FORCE.setdefault(ip, []).append((time.time(), ok))
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get("user_id"):
+            return jsonify({"error": "unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+# Initialize auth DB on module load (works for both `python app.py` and WSGI servers)
+init_auth_db()
+
+# ─── Global auth guard ────────────────────────────────────────────────────────
+# ─── Token-based auth (bypasses cookie issues with reverse proxies) ─────────
+TOKEN_DB_PATH = os.path.join(os.path.dirname(__file__), ".auth_tokens.db")
+
+def init_token_db():
+    with sqlite3.connect(TOKEN_DB_PATH) as db:
+        db.execute("""CREATE TABLE IF NOT EXISTS auth_tokens (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            is_admin INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
+        )""")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_token_user ON auth_tokens(user_id)")
+
+init_token_db()
+
+def create_token(user_id, username, is_admin, days=7):
+    """Create a short-lived bearer token stored server-side."""
+    token = uuid.uuid4().hex + uuid.uuid4().hex
+    now = int(time.time())
+    with sqlite3.connect(TOKEN_DB_PATH) as db:
+        db.execute("DELETE FROM auth_tokens WHERE expires_at < ?", (now,))
+        db.execute(
+            "INSERT INTO auth_tokens (token, user_id, username, is_admin, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (token, user_id, username, is_admin, now, now + days * 86400)
+        )
+    return token
+
+def validate_token(token):
+    """Return (user_id, username, is_admin) if valid, else None."""
+    if not token:
+        return None
+    with sqlite3.connect(TOKEN_DB_PATH) as db:
+        row = db.execute(
+            "SELECT user_id, username, is_admin FROM auth_tokens WHERE token = ? AND expires_at > ?",
+            (token, int(time.time()))
+        ).fetchone()
+    return row if row else None
+
+# ─── Bearer-token auth guard (replaces cookie session) ────────────────────────
+PUBLIC_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/auth/session",
+                "/health", "/api/stats", "/api/quota"}
+
+@app.before_request
+def require_auth():
+    if request.path in PUBLIC_PATHS:
+        return None
+    # Try cookie session first, fall back to Bearer token
+    uid = session.get("user_id")
+    if not uid:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[7:]
+            row = validate_token(token)
+            if row:
+                session["user_id"] = row[0]
+                session["username"] = row[1]
+                session["is_admin"] = bool(row[2])
+                session.permanent = True
+                uid = row[0]
+    if not uid:
+        return jsonify({"error": "unauthorized"}), 401
+    return None
 
 # ─── Model Pricing (USD per 1M tokens) ───────────────────────────────────────
 # Input / Output
@@ -491,12 +615,40 @@ def get_providers():
 
     return result
 
+# ─── Model cache (avoid re-querying all providers every request) ────────────
+_MODEL_CACHE = {"data": None, "ts": 0}
+_MODEL_CACHE_TTL = 120  # seconds
+
 def get_models():
-    """Discover models from /v1/models of each provider — parallel requests."""
+    """Discover models from /v1/models of each provider — parallel requests, cached."""
+    import time as _time
+    now = _time.time()
+    if _MODEL_CACHE["data"] is not None and now - _MODEL_CACHE["ts"] < _MODEL_CACHE_TTL:
+        return _MODEL_CACHE["data"]
+
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import urllib.request
 
     providers = get_providers()
+
+    # Fallback model lists for providers whose /v1/models returns 404
+    FALLBACK_MODELS = {
+        "xiaomi": ["mimo-v2.5", "mimo-v2.5-pro", "mimo-v2-pro", "mimo-v2-flash", "mimo-v2-omni"],
+        "xiaomi-token-plan-sgp": ["mimo-v2.5", "mimo-v2.5-pro", "mimo-v2-pro", "mimo-v2-flash", "mimo-v2-omni"],
+        "xiaomi-token-plan-cn": ["mimo-v2.5", "mimo-v2.5-pro", "mimo-v2-pro", "mimo-v2-flash", "mimo-v2-omni"],
+        "xiaomi-token-plan-ams": ["mimo-v2.5", "mimo-v2.5-pro", "mimo-v2-pro", "mimo-v2-flash", "mimo-v2-omni"],
+    }
+
+    # Also load known models from models_dev_cache.json
+    _dev_cache_path = os.path.join(HERMES_HOME, "models_dev_cache.json")
+    try:
+        dev_cache = json.load(open(_dev_cache_path))
+        for prov_id, prov_info in dev_cache.items():
+            models_dict = prov_info.get("models", {})
+            if models_dict and prov_id not in FALLBACK_MODELS:
+                FALLBACK_MODELS[prov_id] = list(models_dict.keys())
+    except Exception:
+        pass
 
     def fetch_models_for_provider(prov):
         base_url = prov.get("base_url", "")
@@ -510,7 +662,9 @@ def get_models():
             pass
 
         if not api_key or not base_url:
-            return []
+            # Try fallback models even without API key
+            fb = FALLBACK_MODELS.get(prov["id"], [])
+            return [(prov["id"], m, "", None) for m in fb]
 
         try:
             req = urllib.request.Request(
@@ -519,10 +673,16 @@ def get_models():
             )
             with urllib.request.urlopen(req, timeout=8) as resp:
                 data = json.loads(resp.read())
-                return [(prov["id"], m.get("id", ""), m.get("owned_by", ""), m.get("created"))
+                models = [(prov["id"], m.get("id", ""), m.get("owned_by", ""), m.get("created"))
                         for m in data.get("data", []) if m.get("id")]
+                if models:
+                    return models
         except Exception:
-            return []
+            pass
+
+        # Fallback to known model lists when API fails
+        fb = FALLBACK_MODELS.get(prov["id"], [])
+        return [(prov["id"], m, "", None) for m in fb]
 
     all_models = []
     seen = set()
@@ -540,6 +700,8 @@ def get_models():
                         "created": created,
                     })
 
+    _MODEL_CACHE["data"] = all_models
+    _MODEL_CACHE["ts"] = now
     return all_models
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
@@ -634,97 +796,172 @@ def api_quota_debug2():
 
 @app.route("/api/quota", methods=["GET"])
 def api_quota():
-    """MiniMax token quota — inlined to avoid subprocess cache issues."""
+    """Token quota — provider-aware. MiniMax uses mmx CLI, others calculate from sessions DB."""
+    config_path = os.path.join(HERMES_HOME, "config.yaml")
+    current_provider = ""
+    current_model = ""
+    try:
+        import yaml
+        cfg = yaml.safe_load(open(config_path)) or {}
+        model_cfg = cfg.get("model", {})
+        current_provider = model_cfg.get("provider", "")
+        current_model = model_cfg.get("default", "")
+    except Exception:
+        pass
+
+    is_minimax = "minimax" in current_provider.lower()
+    if is_minimax:
+        # ... existing MiniMax mmx quota logic ...
+        try:
+            import datetime as dt
+            import calendar
+
+            result = subprocess.run(
+                ["mmx", "quota", "show"],
+                capture_output=True, text=True, timeout=15
+            )
+            if result.returncode != 0:
+                return jsonify({"error": "mmx failed", "stderr": result.stderr}), 500
+
+            data = json.loads(result.stdout.strip())
+            models = data.get("model_remains", [])
+            if not models:
+                return jsonify({"error": "no model_remains", "raw": result.stdout[:200]}), 200
+
+            def fmt_remains(seconds):
+                if not seconds: return "—"
+                s = int(seconds)
+                d, s = divmod(s, 86400)
+                h, s = divmod(s, 3600)
+                m, s = divmod(s, 60)
+                parts = []
+                if d > 0: parts.append(f"{d}天")
+                if h > 0: parts.append(f"{h}小时")
+                if m > 0: parts.append(f"{m}分")
+                if not parts: parts.append(f"{s}秒")
+                return "".join(parts)
+
+            m0 = models[0]
+            weekly_total   = m0.get("current_weekly_total_count", 0) or 0
+            weekly_used    = m0.get("current_weekly_usage_count", 0) or 0
+            interval_total = m0.get("current_interval_total_count", 0) or 0
+            interval_used  = m0.get("current_interval_usage_count", 0) or 0
+            weekly_end_ms  = m0.get("weekly_end_time")
+            interval_end_ms = m0.get("end_time")
+
+            if interval_end_ms:
+                reset_utc = dt.datetime.utcfromtimestamp(interval_end_ms / 1000)
+                now_utc  = dt.datetime.utcnow()
+                countdown = max(0, int((reset_utc - now_utc).total_seconds()))
+            else:
+                countdown = None
+
+            if weekly_end_ms:
+                weekly_reset_str = dt.datetime.fromtimestamp(weekly_end_ms / 1000).strftime("%m-%d %H:%M")
+            else:
+                weekly_reset_str = None
+
+            monthly_reset_str = None
+            if weekly_end_ms:
+                wdt = dt.datetime.fromtimestamp(weekly_end_ms / 1000)
+                last_day = calendar.monthrange(wdt.year, wdt.month)[1]
+                monthly_reset_str = wdt.replace(day=last_day, hour=23, minute=59).strftime("%m-%d %H:%M")
+
+            return jsonify({
+                "provider": current_provider,
+                "model": current_model,
+                "quota_available": True,
+                "weekly_limit":   weekly_total,
+                "weekly_used":    weekly_used,
+                "weekly_total":   weekly_total,
+                "per_round_limit": interval_total,
+                "per_round_used":  interval_used,
+                "per_round_countdown": countdown,
+                "per_round_reset_str": fmt_remains(countdown) if countdown is not None else None,
+                "weekly_reset_str":   weekly_reset_str,
+                "monthly_reset_str":  monthly_reset_str,
+                "daily_reset_ts":     interval_end_ms,
+                "weekly_reset_ts":    weekly_end_ms,
+                "models": [
+                    {
+                        "name":              mm.get("model_name", ""),
+                        "weekly_total":      mm.get("current_weekly_total_count", 0) or 0,
+                        "weekly_used":       mm.get("current_weekly_usage_count", 0) or 0,
+                        "weekly_remains":    max(0, (mm.get("current_weekly_total_count", 0) or 0) - (mm.get("current_weekly_usage_count", 0) or 0)),
+                        "interval_total":    mm.get("current_interval_total_count", 0) or 0,
+                        "interval_used":     mm.get("current_interval_usage_count", 0) or 0,
+                        "interval_remains":  max(0, (mm.get("current_interval_total_count", 0) or 0) - (mm.get("current_interval_usage_count", 0) or 0)),
+                        "monthly_total":     ((mm.get("current_weekly_total_count", 0) or 0) * 4) if (mm.get("current_weekly_total_count", 0) or 0) > 0 else 0,
+                        "monthly_used":      ((mm.get("current_weekly_usage_count", 0) or 0) * 4) if (mm.get("current_weekly_total_count", 0) or 0) > 0 else 0,
+                        "monthly_remains":   max(0, ((mm.get("current_weekly_total_count", 0) or 0) * 4) - ((mm.get("current_weekly_usage_count", 0) or 0) * 4)) if (mm.get("current_weekly_total_count", 0) or 0) > 0 else 0,
+                    }
+                    for mm in models
+                ],
+            })
+        except Exception as e:
+            import traceback
+            return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+    # ── Non-MiniMax provider: calculate usage from sessions DB ──────
     try:
         import datetime as dt
-        import calendar
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT model, input_tokens, output_tokens, 
+                   COALESCE(estimated_cost_usd, 0) * ?, started_at
+            FROM sessions ORDER BY started_at DESC LIMIT 2000
+        """, (USD_TO_CNY,))
+        rows = cur.fetchall()
+        conn.close()
 
-        result = subprocess.run(
-            ["mmx", "quota", "show"],
-            capture_output=True, text=True, timeout=15
-        )
-        if result.returncode != 0:
-            return jsonify({"error": "mmx failed", "stderr": result.stderr}), 500
+        now = dt.datetime.utcnow()
+        today_str = now.strftime("%Y-%m-%d")
+        week_start = (now - dt.timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+        month_start = now.strftime("%Y-%m-01")
 
-        data = json.loads(result.stdout.strip())
-        models = data.get("model_remains", [])
-        if not models:
-            return jsonify({"error": "no model_remains", "raw": result.stdout[:200]}), 200
+        total_in = total_out = total_cost = 0
+        today_in = today_out = today_cost = 0
+        week_in = week_out = week_cost = 0
+        month_in = month_out = month_cost = 0
+        model_stats = {}
 
-        def fmt_remains(seconds):
-            if not seconds: return "—"
-            s = int(seconds)
-            d, s = divmod(s, 86400)
-            h, s = divmod(s, 3600)
-            m, s = divmod(s, 60)
-            parts = []
-            if d > 0: parts.append(f"{d}天")
-            if h > 0: parts.append(f"{h}小时")
-            if m > 0: parts.append(f"{m}分")
-            if not parts: parts.append(f"{s}秒")
-            return "".join(parts)
+        for model, inp, out, cost, started in rows:
+            inp = inp or 0; out = out or 0; cost = cost or 0
+            total_in += inp; total_out += out; total_cost += cost
+            if started:
+                day_str = dt.datetime.utcfromtimestamp(started).strftime("%Y-%m-%d")
+            else:
+                day_str = ""
 
-        # Use first model as anchor
-        m0 = models[0]
-        weekly_total   = m0.get("current_weekly_total_count", 0) or 0
-        weekly_used    = m0.get("current_weekly_usage_count", 0) or 0
-        interval_total = m0.get("current_interval_total_count", 0) or 0
-        interval_used  = m0.get("current_interval_usage_count", 0) or 0
-        weekly_end_ms  = m0.get("weekly_end_time")  # ms timestamp
-        interval_end_ms = m0.get("end_time")          # ms timestamp
+            if day_str == today_str:
+                today_in += inp; today_out += out; today_cost += cost
+            if day_str >= week_start:
+                week_in += inp; week_out += out; week_cost += cost
+            if day_str >= month_start:
+                month_in += inp; month_out += out; month_cost += cost
 
-        # Per-round countdown: seconds until daily 20:00 UTC reset
-        if interval_end_ms:
-            reset_utc = dt.datetime.utcfromtimestamp(interval_end_ms / 1000)
-            now_utc  = dt.datetime.utcnow()
-            countdown = max(0, int((reset_utc - now_utc).total_seconds()))
-        else:
-            countdown = None
-
-        # Weekly reset string
-        if weekly_end_ms:
-            weekly_reset_str = dt.datetime.fromtimestamp(weekly_end_ms / 1000).strftime("%m-%d %H:%M")
-        else:
-            weekly_reset_str = None
-
-        # Monthly reset: last day of current month
-        monthly_reset_str = None
-        if weekly_end_ms:
-            wdt = dt.datetime.fromtimestamp(weekly_end_ms / 1000)
-            last_day = calendar.monthrange(wdt.year, wdt.month)[1]
-            monthly_reset_str = wdt.replace(day=last_day, hour=23, minute=59).strftime("%m-%d %H:%M")
+            m = model or "unknown"
+            if m not in model_stats:
+                model_stats[m] = {"in": 0, "out": 0, "cost": 0, "count": 0}
+            model_stats[m]["in"] += inp
+            model_stats[m]["out"] += out
+            model_stats[m]["cost"] += cost
+            model_stats[m]["count"] += 1
 
         return jsonify({
-            "weekly_limit":   weekly_total,
-            "weekly_used":    weekly_used,
-            "weekly_total":   weekly_total,
-            "per_round_limit": interval_total,
-            "per_round_used":  interval_used,
-            "per_round_countdown": countdown,
-            "per_round_reset_str": fmt_remains(countdown) if countdown is not None else None,
-            "weekly_reset_str":   weekly_reset_str,
-            "monthly_reset_str":  monthly_reset_str,
-            "daily_reset_ts":     interval_end_ms,
-            "weekly_reset_ts":    weekly_end_ms,
-            "models": [
-                {
-                    "name":              mm.get("model_name", ""),
-                    "weekly_total":      mm.get("current_weekly_total_count", 0) or 0,
-                    "weekly_used":       mm.get("current_weekly_usage_count", 0) or 0,
-                    "weekly_remains":    max(0, (mm.get("current_weekly_total_count", 0) or 0) - (mm.get("current_weekly_usage_count", 0) or 0)),
-                    "interval_total":    mm.get("current_interval_total_count", 0) or 0,
-                    "interval_used":     mm.get("current_interval_usage_count", 0) or 0,
-                    "interval_remains":  max(0, (mm.get("current_interval_total_count", 0) or 0) - (mm.get("current_interval_usage_count", 0) or 0)),
-                    "monthly_total":     ((mm.get("current_weekly_total_count", 0) or 0) * 4) if (mm.get("current_weekly_total_count", 0) or 0) > 0 else 0,
-                    "monthly_used":      ((mm.get("current_weekly_usage_count", 0) or 0) * 4) if (mm.get("current_weekly_total_count", 0) or 0) > 0 else 0,
-                    "monthly_remains":   max(0, ((mm.get("current_weekly_total_count", 0) or 0) * 4) - ((mm.get("current_weekly_usage_count", 0) or 0) * 4)) if (mm.get("current_weekly_total_count", 0) or 0) > 0 else 0,
-                }
-                for mm in models
-            ],
+            "provider": current_provider,
+            "model": current_model,
+            "quota_available": False,
+            "usage_stats": True,
+            "totals": {"in": total_in, "out": total_out, "cost": total_cost},
+            "today":  {"in": today_in, "out": today_out, "cost": today_cost},
+            "week":   {"in": week_in, "out": week_out, "cost": week_cost},
+            "month":  {"in": month_in, "out": month_out, "cost": month_cost},
+            "models": [{"name": m, **v} for m, v in sorted(model_stats.items(), key=lambda x: x[1]["in"]+x[1]["out"], reverse=True)],
         })
     except Exception as e:
-        import traceback
-        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/channels", methods=["GET"])
@@ -876,6 +1113,81 @@ def api_providers():
 def api_models():
     """List available models from all providers."""
     return jsonify({"models": get_models()})
+
+
+@app.route("/api/config/model", methods=["GET"])
+def api_config_model_get():
+    """Return current model config from config.yaml."""
+    config_path = os.path.join(HERMES_HOME, "config.yaml")
+    try:
+        import yaml
+        cfg = yaml.safe_load(open(config_path)) or {}
+    except Exception:
+        cfg = {}
+    model_cfg = cfg.get("model", {})
+    return jsonify({
+        "provider": model_cfg.get("provider", ""),
+        "base_url": model_cfg.get("base_url", ""),
+        "api_key": model_cfg.get("api_key", ""),
+        "model": model_cfg.get("default", ""),
+    })
+
+
+@app.route("/api/config/model", methods=["POST"])
+def api_config_model():
+    """Update model config in config.yaml. Body: {provider, base_url, api_key, model}. Returns updated config."""
+    body = request.get_json() or {}
+    provider = (body.get("provider") or "").strip()
+    base_url = (body.get("base_url") or "").strip()
+    api_key  = (body.get("api_key")  or "").strip()
+    model    = (body.get("model")    or "").strip()
+
+    if not provider:
+        return jsonify({"error": "provider is required"}), 400
+
+    config_path = os.path.join(HERMES_HOME, "config.yaml")
+    cfg = {}
+    try:
+        import yaml
+        cfg = yaml.safe_load(open(config_path)) or {}
+    except Exception as e:
+        return jsonify({"error": f"Failed to read config: {e}"}), 500
+
+    if "model" not in cfg:
+        cfg["model"] = {}
+    cfg["model"]["provider"] = provider
+    if base_url:
+        cfg["model"]["base_url"] = base_url
+    if api_key:
+        cfg["model"]["api_key"] = api_key
+    if model:
+        cfg["model"]["default"] = model
+
+    try:
+        import yaml
+        with open(config_path, "w") as f:
+            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    except Exception as e:
+        return jsonify({"error": f"Failed to write config: {e}"}), 500
+
+    # Notify hermes gateway to reload (SIGUSR1)
+    try:
+        pid_file = os.path.join(HERMES_HOME, "gateway.pid")
+        with open(pid_file) as pf:
+            raw = pf.read().strip()
+        try:
+            pid = int(json.loads(raw).get("pid"))
+        except Exception:
+            pid = int(raw)
+        os.kill(pid, 10)  # SIGUSR1
+    except Exception:
+        pass
+
+    # Invalidate model cache so next request fetches fresh
+    _MODEL_CACHE["data"] = None
+    _MODEL_CACHE["ts"] = 0
+
+    return jsonify({"ok": True, "config": cfg["model"]})
 
 
 @app.route("/api/cron", methods=["GET"])
@@ -1132,10 +1444,159 @@ def health():
     return jsonify({"status": "ok", "ts": datetime.now().isoformat()})
 
 
+# ─── Auth API ─────────────────────────────────────────────────────────────────
+
+@app.route("/api/auth/login", methods=["POST"])
+def api_login():
+    ip = request.remote_addr or "127.0.0.1"
+    if check_brute(ip):
+        return jsonify({"error": "次数过多，请5分钟后再试"}), 429
+
+    data = request.get_json() or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+
+    if not username or not password:
+        record_attempt(ip, False)
+        return jsonify({"error": "请输入用户名和密码"}), 400
+
+    with sqlite3.connect(ACCOUNTS_DB_PATH) as db:
+        row = db.execute(
+            "SELECT id, username, password, is_admin FROM accounts WHERE username = ?",
+            (username,)
+        ).fetchone()
+
+    if not row or not check_password_hash(row[2], password):
+        record_attempt(ip, False)
+        return jsonify({"error": "用户名或密码错误"}), 401
+
+    record_attempt(ip, True)
+    session["user_id"] = row[0]
+    session["username"] = row[1]
+    session["is_admin"] = bool(row[3])
+    session.permanent = True
+    app.permanent_session_lifetime = timedelta(days=7)
+    token = create_token(row[0], row[1], row[3])
+    return jsonify({
+        "ok": True,
+        "user_id": row[0],
+        "username": row[1],
+        "is_admin": bool(row[3]),
+        "token": token
+    })
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def api_logout():
+    session.clear()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/auth/session", methods=["GET"])
+def api_session():
+    uid = session.get("user_id")
+    # Also check Bearer token (needed when cookie is lost to reverse proxy)
+    if not uid:
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            row = validate_token(auth[7:])
+            if row:
+                session["user_id"] = row[0]
+                session["username"] = row[1]
+                session["is_admin"] = bool(row[2])
+                session.permanent = True
+                uid = row[0]
+    if not uid:
+        return jsonify({"logged_in": False})
+    return jsonify({
+        "logged_in": True,
+        "username": session.get("username"),
+        "is_admin": session.get("is_admin")
+    })
+
+
+@app.route("/api/auth/accounts", methods=["GET"])
+@login_required
+def api_accounts_list():
+    if not session.get("is_admin"):
+        return jsonify({"error": "需要管理员权限"}), 403
+    with sqlite3.connect(ACCOUNTS_DB_PATH) as db:
+        rows = db.execute(
+            "SELECT id, username, is_admin, created_at FROM accounts ORDER BY id"
+        ).fetchall()
+    return jsonify([{
+        "id": r[0], "username": r[1],
+        "is_admin": bool(r[2]), "created_at": r[3]
+    } for r in rows])
+
+
+@app.route("/api/auth/accounts", methods=["POST"])
+@login_required
+def api_accounts_create():
+    if not session.get("is_admin"):
+        return jsonify({"error": "需要管理员权限"}), 403
+    data = request.get_json() or {}
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
+    is_admin = bool(data.get("is_admin"))
+
+    if not username or len(username) < 2:
+        return jsonify({"error": "用户名至少2个字符"}), 400
+    if not password or len(password) < 6:
+        return jsonify({"error": "密码至少6个字符"}), 400
+
+    pw_hash = generate_password_hash(password)
+    try:
+        with sqlite3.connect(ACCOUNTS_DB_PATH) as db:
+            db.execute(
+                "INSERT INTO accounts (username, password, is_admin) VALUES (?, ?, ?)",
+                (username, pw_hash, is_admin)
+            )
+            db.commit()
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "用户名已存在"}), 409
+
+    return jsonify({"ok": True, "username": username})
+
+
+@app.route("/api/auth/accounts/<int:account_id>", methods=["DELETE"])
+@login_required
+def api_accounts_delete(account_id):
+    if not session.get("is_admin"):
+        return jsonify({"error": "需要管理员权限"}), 403
+    if account_id == session.get("user_id"):
+        return jsonify({"error": "不能删除当前登录账号"}), 400
+    with sqlite3.connect(ACCOUNTS_DB_PATH) as db:
+        db.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+        db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/auth/accounts/password", methods=["PUT"])
+@login_required
+def api_accounts_password():
+    data = request.get_json() or {}
+    account_id = data.get("id")
+    new_password = data.get("password") or ""
+
+    if not session.get("is_admin") and session.get("user_id") != account_id:
+        return jsonify({"error": "权限不足"}), 403
+
+    if not new_password or len(new_password) < 6:
+        return jsonify({"error": "密码至少6个字符"}), 400
+
+    pw_hash = generate_password_hash(new_password)
+    with sqlite3.connect(ACCOUNTS_DB_PATH) as db:
+        db.execute("UPDATE accounts SET password = ? WHERE id = ?", (pw_hash, account_id))
+        db.commit()
+    return jsonify({"ok": True})
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import psutil
+    init_auth_db()
     print(f"[Hermes Dashboard Backend] Starting on port 3801")
     print(f"  HERMES_HOME: {HERMES_HOME}")
     print(f"  DB: {DB_PATH}")
