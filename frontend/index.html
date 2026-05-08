@@ -222,9 +222,8 @@ function navigate(page) {
   sessionStorage.setItem('hermes-page', page); // persist across refresh on mobile
   // Sync URL hash so browser refresh keeps the current page
   if (window.location.hash.slice(1) !== page) {
-    _navigating = true;
+    _skipNextHash = true;
     window.location.hash = page;
-    _navigating = false;
   }
   window.scrollTo({ top: 0 });
   switch (page) {
@@ -246,7 +245,7 @@ function navigate(page) {
 async function renderDashboard() {
   $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div>加载中…</div>';
   try {
-    const [stats, quota] = await Promise.all([api('/stats'), api('/quota')]);
+    let [stats, quota] = await Promise.all([api('/stats'), api('/quota')]);
     cache.stats = stats;
 
     const totalSessions = stats.total_sessions || 0;
@@ -376,11 +375,11 @@ async function renderDashboard() {
         <div class="qb-body">
           <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px">
             <div style="text-align:center;padding:12px 8px;background:var(--surface-2);border-radius:12px">
-              <div style="font-size:20px;font-weight:700;color:var(--ink)">${fmtNum((quota.today||{}).in||0 + (quota.today||{}).out||0)}</div>
+              <div style="font-size:20px;font-weight:700;color:var(--ink)">${fmtNum(((quota.today||{}).in||0) + ((quota.today||{}).out||0))}</div>
               <div style="font-size:11px;color:var(--ink-3);margin-top:2px">今日 Tokens</div>
             </div>
             <div style="text-align:center;padding:12px 8px;background:var(--surface-2);border-radius:12px">
-              <div style="font-size:20px;font-weight:700;color:var(--ink)">${fmtNum((quota.week||{}).in||0 + (quota.week||{}).out||0)}</div>
+              <div style="font-size:20px;font-weight:700;color:var(--ink)">${fmtNum(((quota.week||{}).in||0) + ((quota.week||{}).out||0))}</div>
               <div style="font-size:11px;color:var(--ink-3);margin-top:2px">本周 Tokens</div>
             </div>
             <div style="text-align:center;padding:12px 8px;background:var(--surface-2);border-radius:12px">
@@ -512,14 +511,11 @@ async function renderDashboard() {
         });
       });
 
-      // Listen for model changes from models page
-      window.addEventListener('model-changed', () => {
-        api('/quota').then(q => { quota = q; updateQuotaCard(defaultModel); }).catch(() => {});
-      });
+      // model-changed listener registered once at bottom (not here to avoid duplicates)
     }
 
   } catch (e) {
-    $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">加载失败: ${e.message}</div></div>`;
+    $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">加载失败: ${escapeHtml(e.message)}</div></div>`;
   }
 }
 
@@ -1982,17 +1978,15 @@ function toggleTheme() {
 
 /* ─── Init ────────────────────────────────────────────────────────── */
 let _authChecked = false;
-let _navigating = false;  // guard against re-entrant handleHash from hashchange
+let _skipNextHash = false;  // skip next hashchange after navigate() sets hash
 async function handleHash() {
   const raw = window.location.hash.slice(1);
   // Priority: URL hash > sessionStorage > default 'dashboard'
   const hash = raw.split('?')[0] || sessionStorage.getItem('hermes-page') || 'dashboard';
   // Sync hash in URL if it was empty (so refresh keeps the page)
-  // Use _navigating guard to prevent the hashchange triggered below from re-entering
   if (!raw) {
-    _navigating = true;
+    _skipNextHash = true;
     window.location.hash = hash;
-    _navigating = false;
   }
   $$('.dk').forEach(el => el.classList.remove('active'));
   const dk = $(`.dk[data-page="${hash}"]`);
@@ -2002,7 +1996,12 @@ async function handleHash() {
   _authChecked = true;
   navigate(hash);
 }
-window.addEventListener('hashchange', () => { if (!_navigating) handleHash(); });
+window.addEventListener('hashchange', () => { if (_skipNextHash) { _skipNextHash = false; return; } handleHash(); });
+
+// Listen for model-changed ONCE (was inside renderDashboard causing memory leak)
+window.addEventListener('model-changed', () => {
+  api('/quota').then(q => { cache.quota = q; }).catch(() => {});
+});
 
 window.addEventListener('pageshow', e => {
   if (e.persisted) handleHash();

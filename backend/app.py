@@ -25,6 +25,7 @@ from flask import Flask, jsonify, request, send_from_directory, session
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 import uuid
+import psutil
 
 # Reusable +08:00 timezone
 UTC8 = timezone(timedelta(hours=8))
@@ -390,6 +391,7 @@ def list_logs():
 
 def read_log_file(fname, keyword="", level="", limit=200):
     """Read last N lines from log file efficiently (tail-like)."""
+    fname = os.path.basename(fname)  # prevent path traversal
     fpath = os.path.join(LOGS_DIR, fname)
     if not os.path.isfile(fpath):
         return []
@@ -810,7 +812,7 @@ def api_stats():
         check_channel("Mattermost"),
     ]
 
-    import platform, psutil
+    import platform
     python_v = f"Python {platform.python_version().strip()}"
 
     try:
@@ -850,7 +852,7 @@ def api_quota_debug2():
         models = data.get("model_remains", [])
         return jsonify({"rc": result.returncode, "models_count": len(models), "output_len": len(output)})
     except Exception as e:
-        return jsonify({"error": str(e), "tb": traceback.format_exc()})
+        return jsonify({"error": str(e)})
 
 @app.route("/api/quota", methods=["GET"])
 def api_quota():
@@ -958,7 +960,7 @@ def api_quota():
             })
         except Exception as e:
             import traceback
-            return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+            return jsonify({"error": str(e)}), 500
 
     # ── Non-MiniMax provider: calculate usage from sessions DB ──────
     try:
@@ -1196,7 +1198,7 @@ def api_config_model_get():
     return jsonify({
         "provider": provider,
         "base_url": base_url,
-        "api_key": model_cfg.get("api_key", ""),
+        "api_key": "***" if model_cfg.get("api_key", "") else "",
         "model": model_cfg.get("default", ""),
     })
 
@@ -1427,7 +1429,7 @@ def api_releases():
 @app.route("/api/system", methods=["GET"])
 def api_system():
     """System info: Hermes version, model, provider, Python version, uptime."""
-    import platform, psutil
+    import platform
 
     hermes_version = "unknown"
     try:
