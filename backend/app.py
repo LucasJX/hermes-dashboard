@@ -1426,6 +1426,321 @@ def api_releases():
     return jsonify({"releases": get_github_releases()})
 
 
+# ─── Version + Update endpoints ──────────────────────────────────────────────
+
+_VERSION_CACHE = {"data": None, "ts": 0}
+_VERSION_CACHE_TTL = 3600  # 1 hour
+
+def _get_local_version():
+    """Get installed Hermes version from `hermes --version`."""
+    try:
+        ver = subprocess.run(
+            ["hermes", "--version"], capture_output=True, text=True, timeout=5
+        )
+        if ver.returncode == 0:
+            first_line = ver.stdout.strip().split("\n")[0]
+            # "Hermes Agent v0.12.0 (2026.4.30)"
+            if "v" in first_line:
+                return first_line.split("v")[1].split(" ")[0].strip()
+    except Exception:
+        pass
+    return None
+
+def _get_latest_release():
+    """Get latest GitHub release with caching and fallback."""
+    now = time.time()
+    if _VERSION_CACHE["data"] is not None and now - _VERSION_CACHE["ts"] < _VERSION_CACHE_TTL:
+        return _VERSION_CACHE["data"]
+
+    try:
+        import urllib.request
+        url = "https://api.github.com/repos/NousResearch/hermes-agent/releases/latest"
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "hermes-dashboard",
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            tag = data.get("tag_name", "")
+            name = data.get("name", "")
+            body = data.get("body", "")
+
+            # Extract semantic version from release name (e.g. "Hermes Agent v0.13.0 (2026.5.7)")
+            # Fall back to tag if name doesn't contain a semver
+            import re as _re
+            version = None
+            if name:
+                m = _re.search(r'v(\d+\.\d+\.\d+)', name)
+                if m:
+                    version = m.group(1)
+            if not version and tag:
+                # Tag might be date-based (v2026.5.7) — try to extract semver from body
+                if body:
+                    m = _re.search(r'[vV](\d+\.\d+\.\d+)', body[:500])
+                    if m:
+                        version = m.group(1)
+            if not version:
+                version = tag.lstrip("v") if tag else None
+
+            result = {
+                "version": version,
+                "tag": tag,
+                "name": name,
+                "body": body,
+                "published_at": data.get("published_at", ""),
+                "html_url": data.get("html_url", ""),
+            }
+            _VERSION_CACHE["data"] = result
+            _VERSION_CACHE["ts"] = now
+            return result
+    except Exception:
+        # Fallback: try git fetch in hermes-agent repo
+        try:
+            agent_dir = os.path.join(HERMES_HOME, "hermes-agent")
+            if os.path.isdir(os.path.join(agent_dir, ".git")):
+                subprocess.run(
+                    ["git", "fetch", "--tags", "--quiet"],
+                    cwd=agent_dir, capture_output=True, timeout=10
+                )
+                tag_out = subprocess.run(
+                    ["git", "describe", "--tags", "--abbrev=0", "origin/main"],
+                    cwd=agent_dir, capture_output=True, text=True, timeout=5
+                )
+                if tag_out.returncode == 0:
+                    t = tag_out.stdout.strip()
+                    # Try to get semver from tag annotation: "Hermes Agent v0.13.0 (2026.5.7)"
+                    version = None
+                    tag_msg = subprocess.run(
+                        ["git", "tag", "-n1", t],
+                        cwd=agent_dir, capture_output=True, text=True, timeout=5
+                    )
+                    if tag_msg.returncode == 0:
+                        import re as _re
+                        # Match "Hermes Agent v0.13.0" but NOT "v2026.5.7" (date tag)
+                        m = _re.search(r'Agent\s+v(\d+\.\d+\.\d+)', tag_msg.stdout)
+                        if not m:
+                            m = _re.search(r'v(\d+\.\d+\.\d+)', tag_msg.stdout)
+                        if m:
+                            version = m.group(1)
+                    if not version:
+                        version = t.lstrip("v")
+                    result = {"version": version, "tag": t, "name": "", "body": "", "published_at": "", "html_url": ""}
+                    _VERSION_CACHE["data"] = result
+                    _VERSION_CACHE["ts"] = now
+                    return result
+        except Exception:
+            pass
+    return None
+
+def _parse_changelog(body):
+    """Parse GitHub release body into categorized Chinese changelog."""
+    if not body:
+        return {}
+
+    categories = {
+        "🚀 新功能": [],
+        "🔌 平台扩展": [],
+        "⚡ 核心改进": [],
+        "🔒 安全修复": [],
+    }
+
+    # Keywords for categorization
+    feat_kw = ["feat", "feature", "add", "new", "implement", "support", "introduce"]
+    platform_kw = ["platform", "gateway", "telegram", "discord", "slack", "whatsapp",
+                   "signal", "matrix", "weixin", "wechat", "email", "sms", "webhook",
+                   "dingtalk", "wecom", "feishu", "mattermost", "home assistant"]
+    security_kw = ["security", "cve", "vulnerability", "fix", "sanitize", "escape",
+                   "injection", "auth", "permission", "secret", "token", "credential",
+                   "redact", "pii"]
+    # Everything else → 核心改进
+
+    lines = body.split("\n")
+    for line in lines:
+        stripped = line.strip()
+        # Skip headers, empty lines, separators
+        if not stripped or stripped.startswith("#") or stripped.startswith("---") or stripped.startswith("**Full Changelog**"):
+            continue
+        # Extract list items: "- title (#1234) @author" or "- title"
+        item = stripped.lstrip("- ").strip()
+        if not item or len(item) < 3:
+            continue
+
+        lower = item.lower()
+        matched = False
+
+        # Security first (highest priority)
+        if any(kw in lower for kw in security_kw):
+            # But "fix" alone might be core improvement — only if it's clearly security
+            if any(kw in lower for kw in ["security", "cve", "vulnerability", "sanitiz",
+                                           "escape", "injection", "secret", "credential",
+                                           "redact", "pii", "auth"]):
+                categories["🔒 安全修复"].append(item)
+                matched = True
+
+        if not matched and any(kw in lower for kw in feat_kw):
+            categories["🚀 新功能"].append(item)
+            matched = True
+
+        if not matched and any(kw in lower for kw in platform_kw):
+            categories["🔌 平台扩展"].append(item)
+            matched = True
+
+        if not matched:
+            categories["⚡ 核心改进"].append(item)
+
+    # Remove empty categories
+    return {k: v for k, v in categories.items() if v}
+
+
+# ─── Changelog Translation Cache ─────────────────────────────────────────────
+_TRANSLATED_CACHE = {"version": None, "data": None}
+
+def _translate_changelog(changelog, version):
+    """Translate changelog to Chinese via DeepSeek. Cached by version."""
+    if not changelog:
+        return changelog
+    if _TRANSLATED_CACHE["version"] == version and _TRANSLATED_CACHE["data"]:
+        return _TRANSLATED_CACHE["data"]
+
+    try:
+        import urllib.request
+        # Flatten all items for batch translation
+        all_items = []
+        item_map = {}  # idx -> (category, item_idx)
+        for cat, items in changelog.items():
+            for i, item in enumerate(items):
+                idx = len(all_items)
+                all_items.append(item)
+                item_map[idx] = (cat, i)
+
+        if not all_items:
+            return changelog
+
+        # Batch translate in chunks of 80 items
+        translated = list(all_items)
+        CHUNK = 80
+        for start in range(0, len(all_items), CHUNK):
+            chunk = all_items[start:start + CHUNK]
+            numbered = "\n".join(f"{i+1}. {item}" for i, item in enumerate(chunk))
+            prompt = (
+                "将以下 GitHub Release Notes 条目翻译为简洁中文。"
+                "保留 PR 编号和链接不变。只输出翻译后的条目，每行一条，"
+                "保持编号格式。技术术语保留英文。\n\n"
+                f"{numbered}"
+            )
+            body = json.dumps({
+                "model": "deepseek-chat",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "max_tokens": 4096,
+            })
+            req = urllib.request.Request(
+                "http://127.0.0.1:3900/v1/chat/completions",
+                data=body.encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = json.loads(resp.read())
+                text = result["choices"][0]["message"]["content"].strip()
+                lines = text.strip().split("\n")
+                for j, line in enumerate(lines):
+                    # Strip "1. " prefix
+                    import re as _re
+                    m = _re.match(r'^\d+\.\s*(.+)', line.strip())
+                    if m and start + j < len(translated):
+                        translated[start + j] = m.group(1).strip()
+
+        # Rebuild categorized dict
+        translated_cl = {}
+        for cat, items in changelog.items():
+            translated_cl[cat] = [translated[item_map[i][1]] if i in item_map else item
+                                  for i, item in enumerate(items)]
+            # Actually, rebuild from item_map properly
+            translated_cl[cat] = []
+            for orig_idx, (c, ci) in enumerate(item_map):
+                if c == cat:
+                    translated_cl[cat].append(translated[orig_idx])
+
+        _TRANSLATED_CACHE["version"] = version
+        _TRANSLATED_CACHE["data"] = translated_cl
+        return translated_cl
+    except Exception:
+        return changelog
+
+
+@app.route("/api/version", methods=["GET"])
+def api_version():
+    """Version info: local version, latest version, changelog."""
+    local = _get_local_version()
+    latest = _get_latest_release()
+    latest_version = latest.get("version") if latest else None
+
+    update_available = False
+    if local and latest_version:
+        try:
+            local_parts = [int(x) for x in local.split(".")]
+            latest_parts = [int(x) for x in latest_version.split(".")]
+            update_available = latest_parts > local_parts
+        except (ValueError, TypeError):
+            update_available = local != latest_version
+
+    changelog = {}
+    if latest and latest.get("body"):
+        changelog = _parse_changelog(latest["body"])
+        changelog = _translate_changelog(changelog, latest_version)
+
+    return jsonify({
+        "local_version": local,
+        "latest_version": latest_version,
+        "latest_tag": latest.get("tag", "") if latest else "",
+        "latest_name": latest.get("name", "") if latest else "",
+        "published_at": latest.get("published_at", "") if latest else "",
+        "html_url": latest.get("html_url", "") if latest else "",
+        "update_available": update_available,
+        "changelog": changelog,
+    })
+
+
+_update_process = None
+
+@app.route("/api/version/update", methods=["POST"])
+def api_version_update():
+    """Trigger `hermes update` in background."""
+    global _update_process
+    if _update_process and _update_process.poll() is None:
+        return jsonify({"status": "running", "message": "更新正在进行中..."}), 409
+
+    try:
+        _update_process = subprocess.Popen(
+            ["hermes", "update"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True
+        )
+        return jsonify({"status": "started", "message": "更新已启动"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route("/api/version/update/status", methods=["GET"])
+def api_version_update_status():
+    """Check `hermes update` progress."""
+    global _update_process
+    if _update_process is None:
+        return jsonify({"status": "idle"})
+    poll = _update_process.poll()
+    if poll is None:
+        return jsonify({"status": "running"})
+    stdout = ""
+    try:
+        stdout = _update_process.stdout.read() if _update_process.stdout else ""
+    except Exception:
+        pass
+    # Clear cache so next version check fetches fresh data
+    _VERSION_CACHE["data"] = None
+    _VERSION_CACHE["ts"] = 0
+    return jsonify({"status": "done" if poll == 0 else "error", "exit_code": poll, "output": stdout[-2000:]})
+
+
 @app.route("/api/system", methods=["GET"])
 def api_system():
     """System info: Hermes version, model, provider, Python version, uptime."""

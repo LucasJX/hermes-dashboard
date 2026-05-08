@@ -304,6 +304,21 @@ async function renderDashboard() {
 
   // two-col: 频道状态 + 活跃会话，各占一半，活跃会话在下面
   const dashboardHTML = `
+      <!-- Version Banner -->
+      <div class="version-banner" id="version-banner">
+        <div class="vb-logo">🦞</div>
+        <div class="vb-info">
+          <div class="vb-title">
+            Hermes Agent
+            <span class="vb-version-badge" id="vb-local-ver">v—</span>
+          </div>
+          <div class="vb-sub" id="vb-sub">检查版本中…</div>
+        </div>
+        <div class="vb-actions" id="vb-actions"></div>
+      </div>
+      <!-- Changelog Panel (hidden by default) -->
+      <div class="changelog-panel" id="changelog-panel"></div>
+
       <div class="hero-grid">
         <div class="hero-card">
           <div class="hero-card-icon">💬</div>
@@ -514,8 +529,273 @@ async function renderDashboard() {
       // model-changed listener registered once at bottom (not here to avoid duplicates)
     }
 
+    // ── Version Banner: async check ──
+    _checkVersion();
+
   } catch (e) {
     $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">加载失败: ${escapeHtml(e.message)}</div></div>`;
+  }
+}
+
+
+/* ─── Version Banner + Changelog ─────────────────────────────────── */
+
+let _versionData = null;
+let _changelogOpen = false;
+
+/* ─── Changelog localStorage cache ──────────────────────────────── */
+const CL_CACHE_KEY = 'hermes_cl_'; // prefix, actual key = CL_CACHE_KEY + version
+
+function _getCachedChangelog(version) {
+  try {
+    const raw = localStorage.getItem(CL_CACHE_KEY + version);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return null;
+}
+function _setCachedChangelog(version, data) {
+  try {
+    // Clear old caches
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(CL_CACHE_KEY) && !k.endsWith(version)) {
+        localStorage.removeItem(k);
+      }
+    }
+    localStorage.setItem(CL_CACHE_KEY + version, JSON.stringify(data));
+  } catch {}
+}
+
+async function _checkVersion() {
+  const el = {
+    local: $('#vb-local-ver'),
+    sub: $('#vb-sub'),
+    actions: $('#vb-actions'),
+  };
+  if (!el.local) return;
+
+  try {
+    const data = await api('/version');
+    _versionData = data;
+
+    // Local version badge
+    el.local.textContent = 'v' + (data.local_version || '—');
+
+    // Sub text + latest badge
+    if (data.update_available) {
+      el.sub.innerHTML = `<span class="vb-version-badge vb-update-badge">⬆ v${escapeHtml(data.latest_version)}</span> 有新版本可用`;
+    } else if (data.latest_version) {
+      el.sub.innerHTML = `<span class="vb-version-badge vb-latest-badge">✓ 已是最新</span>`;
+    } else {
+      el.sub.textContent = '无法获取最新版本';
+    }
+
+    // Cache changelog: only store if version matches
+    if (data.latest_version && data.changelog && Object.keys(data.changelog).length) {
+      _setCachedChangelog(data.latest_version, data.changelog);
+    }
+
+    // Action buttons
+    let btns = '';
+    if (data.update_available) {
+      btns += `<button class="vb-btn vb-btn-primary" id="vb-update-btn" onclick="_doUpdate()">
+        <span class="vb-btn-icon">⬆</span> 更新
+      </button>`;
+    }
+    btns += `<button class="vb-btn" id="vb-changelog-btn" onclick="_toggleChangelog()">
+      <span class="vb-btn-icon">📋</span> 更新日志
+    </button>`;
+    if (data.html_url) {
+      btns += `<a class="vb-btn" href="${escapeHtml(data.html_url)}" target="_blank" rel="noopener">
+        <span class="vb-btn-icon">🔗</span> GitHub
+      </a>`;
+    }
+    el.actions.innerHTML = btns;
+
+  } catch (e) {
+    el.sub.textContent = '版本检查失败';
+    el.local.textContent = 'v—';
+  }
+}
+
+function _toggleChangelog() {
+  const panel = $('#changelog-panel');
+  if (!panel) return;
+
+  _changelogOpen = !_changelogOpen;
+
+  if (_changelogOpen) {
+    panel.classList.add('open');
+    // If no content yet, load and animate
+    if (!panel.innerHTML.trim() && _versionData) {
+      // Try localStorage cache first
+      const ver = _versionData.latest_version;
+      const cached = ver ? _getCachedChangelog(ver) : null;
+      if (cached) {
+        _versionData.changelog = cached;
+      }
+      _renderChangelog(panel, _versionData);
+    }
+  } else {
+    panel.classList.remove('open');
+  }
+}
+
+function _renderChangelog(panel, data) {
+  const cl = data.changelog || {};
+  const keys = Object.keys(cl);
+
+  if (!keys.length) {
+    panel.innerHTML = `
+      <div class="cl-header">
+        <div class="cl-title">📋 更新日志</div>
+        <div class="cl-close" onclick="_toggleChangelog()">✕</div>
+      </div>
+      <div class="cl-empty">暂无更新日志信息</div>`;
+    return;
+  }
+
+  const published = data.published_at ? new Date(data.published_at).toLocaleDateString('zh-CN') : '';
+
+  // Build category HTML — items have data-text attribute for animation
+  let catHTML = '';
+  let flatIdx = 0;
+  for (const [cat, items] of Object.entries(cl)) {
+    const catIcon = cat.split(' ')[0];
+    const catName = cat.split(' ').slice(1).join(' ');
+    catHTML += `
+      <div class="cl-category">
+        <div class="cl-cat-header">
+          ${catIcon} ${catName}
+          <span class="cl-cat-count">${items.length}</span>
+        </div>
+        <div class="cl-items">
+          ${items.map(item => `<div class="cl-item" data-cl-idx="${flatIdx++}"><span class="cl-text">${escapeHtml(item)}</span></div>`).join('')}
+        </div>
+      </div>`;
+  }
+
+  panel.innerHTML = `
+    <div class="cl-header">
+      <div class="cl-title">
+        📋 更新日志
+        <span class="vb-version-badge">v${escapeHtml(data.latest_version || '')}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px">
+        ${published ? `<span class="cl-meta">${published}</span>` : ''}
+        <div class="cl-close" onclick="_toggleChangelog()">✕</div>
+      </div>
+    </div>
+    ${catHTML}`;
+
+  // ── Typewriter animation: character-by-character reveal ──
+  _animateChangelog(panel);
+}
+
+function _animateChangelog(panel) {
+  const categories = panel.querySelectorAll('.cl-category');
+  const allItems = panel.querySelectorAll('.cl-item');
+  if (!allItems.length) return;
+
+  // ── Phase 1: Category cascade (waterfall stagger) ──
+  const CAT_STAGGER = 180; // ms between categories
+  categories.forEach((cat, ci) => {
+    cat.style.animationDelay = (ci * CAT_STAGGER) + 'ms';
+    cat.classList.add('cl-cat-in');
+    // Also animate the header
+    const hdr = cat.querySelector('.cl-cat-header');
+    if (hdr) {
+      hdr.style.animationDelay = (ci * CAT_STAGGER + 60) + 'ms';
+      hdr.classList.add('cl-hdr-in');
+    }
+  });
+
+  // ── Phase 2: Item typewriter reveal (line-by-line waterfall) ──
+  const totalItems = allItems.length;
+  // Adaptive timing: faster for large changelogs
+  const ITEM_STAGGER = totalItems > 100 ? 25 : totalItems > 40 ? 35 : 50;
+  const firstCatDelay = CAT_STAGGER; // items start after first category appears
+
+  allItems.forEach((item, i) => {
+    const delay = firstCatDelay + i * ITEM_STAGGER;
+    item.style.animationDelay = delay + 'ms';
+    // Staggered reveal: opacity + clip-path (typewriter wipe) + slide
+    item.classList.add('cl-item-in');
+  });
+
+  // ── Phase 3: Cursor follows the typing ──
+  let cursor = document.createElement('div');
+  cursor.className = 'cl-typing-cursor';
+  panel.appendChild(cursor);
+
+  let curIdx = 0;
+  const CURSOR_STEP = ITEM_STAGGER;
+  const firstItemDelay = firstCatDelay;
+
+  function moveCursor() {
+    if (curIdx >= totalItems) {
+      cursor.classList.add('cl-cursor-done');
+      return;
+    }
+    const item = allItems[curIdx];
+    const rect = item.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    // Position cursor below the current item
+    cursor.style.top = (rect.bottom - panelRect.top + panel.scrollTop) + 'px';
+    cursor.style.left = (rect.left - panelRect.left + 12) + 'px';
+    cursor.style.opacity = '1';
+    curIdx++;
+    setTimeout(moveCursor, CURSOR_STEP);
+  }
+
+  // Start cursor after first item appears
+  setTimeout(moveCursor, firstItemDelay + 80);
+
+  // Auto-remove cursor after all items revealed
+  const totalTime = firstItemDelay + totalItems * CURSOR_STEP + 500;
+  setTimeout(() => {
+    cursor.classList.add('cl-cursor-done');
+    setTimeout(() => cursor.remove(), 600);
+  }, totalTime);
+}
+
+async function _doUpdate() {
+  const btn = $('#vb-update-btn');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="vb-btn-icon">⏳</span> 更新中…';
+
+  try {
+    await fetch(API + '/version/update', {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+
+    // Poll status
+    const poll = setInterval(async () => {
+      try {
+        const st = await api('/version/update/status');
+        if (st.status === 'done') {
+          clearInterval(poll);
+          btn.innerHTML = '<span class="vb-btn-icon">✅</span> 更新完成';
+          toast('Hermes 更新成功！刷新页面生效', 'success');
+          // Refresh version info after 2s
+          setTimeout(() => _checkVersion(), 2000);
+        } else if (st.status === 'error') {
+          clearInterval(poll);
+          btn.innerHTML = '<span class="vb-btn-icon">❌</span> 更新失败';
+          btn.disabled = false;
+          toast('更新失败: ' + (st.output || '未知错误'), 'error');
+        }
+        // else still running, keep polling
+      } catch {
+        // keep polling
+      }
+    }, 3000);
+  } catch (e) {
+    btn.innerHTML = '<span class="vb-btn-icon">⬆</span> 更新';
+    btn.disabled = false;
+    toast('启动更新失败', 'error');
   }
 }
 
