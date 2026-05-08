@@ -602,12 +602,20 @@ def get_providers():
             continue
         c = creds[0]
         norm_name = _norm(prov_name)  # Strip custom: prefix for display
+        last = c.get("last_status")
+        # ok → active; exhausted → active (still works, quota just used); None (never checked) → active; explicit error → error
+        if last == "error":
+            prov_status = "error"
+        elif last in ("ok", "exhausted", None):
+            prov_status = "active"
+        else:
+            prov_status = "active"
         result.append({
             "id": norm_name,
             "name": norm_name,
             "base_url": c.get("base_url", ""),
             "auth_type": c.get("auth_type", "api_key"),
-            "status": "active" if c.get("last_status") == "ok" else "error",
+            "status": prov_status,
             "is_default": norm_name == active or prov_name == active,
             "priority": c.get("priority", 0),
         })
