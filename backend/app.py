@@ -140,7 +140,7 @@ def validate_token(token):
 
 # ─── Bearer-token auth guard (replaces cookie session) ────────────────────────
 PUBLIC_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/auth/session",
-                "/health", "/api/stats", "/api/quota"}
+                "/health", "/api/stats", "/api/quota", "/api/version/inject"}
 
 @app.before_request
 def require_auth():
@@ -1596,7 +1596,7 @@ def _parse_changelog(body):
 _TRANSLATED_CACHE = {"version": None, "data": None}
 
 def _translate_changelog(changelog, version):
-    """Translate changelog to Chinese via DeepSeek. Cached by version."""
+    """用 DeepSeek 归纳总结 changelog 为中文。按版本号缓存。"""
     if not changelog:
         return changelog
     if _TRANSLATED_CACHE["version"] == version and _TRANSLATED_CACHE["data"]:
@@ -1604,74 +1604,90 @@ def _translate_changelog(changelog, version):
 
     try:
         import urllib.request
-        # Flatten all items for batch translation
-        all_items = []
-        item_map = {}  # idx -> (category, item_idx)
-        for cat, items in changelog.items():
-            for i, item in enumerate(items):
-                idx = len(all_items)
-                all_items.append(item)
-                item_map[idx] = (cat, i)
 
-        if not all_items:
+        # 合并所有条目为一个大文本块
+        all_text_parts = []
+        for cat, items in changelog.items():
+            all_text_parts.append(f"## {cat}")
+            for item in items:
+                all_text_parts.append(item)
+        full_text = "\n".join(all_text_parts)
+
+        if not full_text.strip():
             return changelog
 
-        # Batch translate in chunks of 50 items (smaller = more reliable)
-        translated = list(all_items)
-        CHUNK = 50
-        success_count = 0
-        for start in range(0, len(all_items), CHUNK):
-            chunk = all_items[start:start + CHUNK]
-            numbered = "\n".join(f"{i+1}. {item}" for i, item in enumerate(chunk))
-            prompt = (
-                "将以下 GitHub Release Notes 条目翻译为简洁中文。"
-                "保留 PR 编号和链接不变。只输出翻译后的条目，每行一条，"
-                "保持编号格式。技术术语保留英文。\n\n"
-                f"{numbered}"
-            )
-            try:
-                body = json.dumps({
-                    "model": "deepseek-chat",
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.1,
-                    "max_tokens": 8192,
-                })
-                req = urllib.request.Request(
-                    "http://127.0.0.1:3900/v1/chat/completions",
-                    data=body.encode(),
-                    headers={"Content-Type": "application/json"},
-                )
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    result = json.loads(resp.read())
-                    text = result["choices"][0]["message"]["content"].strip()
-                    lines = text.strip().split("\n")
-                    for j, line in enumerate(lines):
-                        import re as _re
-                        m = _re.match(r'^\d+\.\s*(.+)', line.strip())
-                        if m and start + j < len(translated):
-                            translated[start + j] = m.group(1).strip()
-                            success_count += 1
-            except Exception as chunk_err:
-                # This chunk failed — keep English originals, continue with next chunk
-                print(f"[translate] chunk {start}-{start+CHUNK} failed: {chunk_err}")
+        # 截断到 DeepSeek 上下文窗口安全范围（~12000 字 ≈ 8000 tokens）
+        if len(full_text) > 12000:
+            full_text = full_text[:12000] + "\n...(已截断)"
+
+        prompt = (
+            "你是 Hermes Agent 发布说明的中文编辑。请将以下 GitHub Release Notes 归纳总结为中文。\n\n"
+            "要求：\n"
+            "1. 分为4个类别：🚀 新功能、🔌 平台扩展、⚡ 核心改进、🔒 安全修复\n"
+            "2. 每个类别提取 5-8 个最重要的变更，用简洁的一句话中文描述\n"
+            "3. 保留 PR 编号（如 #1234）方便溯源\n"
+            "4. 技术术语保留英文（如 Kanban、MCP、TUI、Gateway 等）\n"
+            "5. 不要逐条翻译，要归纳合并相似的变更，突出亮点\n"
+            "6. 如果某个类别没有对应内容，可以省略该类别\n\n"
+            "输出格式（严格遵守，每行一条，不要编号）：\n"
+            "🚀 新功能\n"
+            "- xxx (#1234)\n\n"
+            "🔌 平台扩展\n"
+            "- xxx (#1234)\n\n"
+            "⚡ 核心改进\n"
+            "- xxx (#1234)\n\n"
+            "🔒 安全修复\n"
+            "- xxx (#1234)\n\n"
+            "---\n"
+            f"以下是 v{version} 的 Release Notes 原文：\n\n"
+            f"{full_text}"
+        )
+
+        body = json.dumps({
+            "model": "deepseek-chat",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+            "max_tokens": 4096,
+        })
+        req = urllib.request.Request(
+            "http://127.0.0.1:3900/v1/chat/completions",
+            data=body.encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=90) as resp:
+            result = json.loads(resp.read())
+            text = result["choices"][0]["message"]["content"].strip()
+
+        # 解析 DeepSeek 输出为分类字典
+        import re as _re
+        categories = {}
+        current_cat = None
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
                 continue
+            # 检测类别标题（emoji + 中文）
+            cat_match = _re.match(r'^([🚀🔌⚡🔒]\s*.+)', line)
+            if cat_match:
+                current_cat = cat_match.group(1).strip()
+                categories[current_cat] = []
+                continue
+            # 检测条目（以 - 开头）
+            if current_cat and line.startswith("- "):
+                item = line[2:].strip()
+                if item:
+                    categories[current_cat].append(item)
 
-        # Rebuild categorized dict
-        translated_cl = {}
-        for cat, items in changelog.items():
-            translated_cl[cat] = [translated[item_map[i][1]] if i in item_map else item
-                                  for i, item in enumerate(items)]
-            # Actually, rebuild from item_map properly
-            translated_cl[cat] = []
-            for orig_idx, (c, ci) in enumerate(item_map):
-                if c == cat:
-                    translated_cl[cat].append(translated[orig_idx])
+        if categories:
+            _TRANSLATED_CACHE["version"] = version
+            _TRANSLATED_CACHE["data"] = categories
+            return categories
 
-        _TRANSLATED_CACHE["version"] = version
-        _TRANSLATED_CACHE["data"] = translated_cl
-        return translated_cl
-    except Exception:
-        return changelog
+    except Exception as e:
+        print(f"[translate] summary failed: {e}")
+
+    # 回退：返回原始英文分类
+    return changelog
 
 
 @app.route("/api/version", methods=["GET"])
@@ -1775,6 +1791,32 @@ def api_version_translate():
         "categories": list(translated.keys()),
         "total_items": sum(len(v) for v in translated.values()),
     })
+
+
+@app.route("/api/version/inject", methods=["POST"])
+def api_version_inject():
+    """Inject pre-fetched release body into cache (bypasses GitHub API rate limit)."""
+    data = request.get_json() or {}
+    body = data.get("release_body", "")
+    if not body:
+        return jsonify({"error": "missing release_body"}), 400
+
+    result = {
+        "version": "0.13.0",
+        "tag": "v2026.5.7",
+        "name": "Hermes Agent v0.13.0 (2026.5.7)",
+        "body": body,
+        "published_at": "2026-05-07T16:23:08Z",
+        "html_url": "https://github.com/NousResearch/hermes-agent/releases/tag/v2026.5.7",
+    }
+    _VERSION_CACHE["data"] = result
+    _VERSION_CACHE["ts"] = time.time()
+
+    # Clear translation cache so it re-translates
+    _TRANSLATED_CACHE["version"] = None
+    _TRANSLATED_CACHE["data"] = None
+
+    return jsonify({"status": "injected", "body_len": len(body)})
 
 
 @app.route("/api/system", methods=["GET"])
