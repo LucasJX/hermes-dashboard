@@ -569,7 +569,7 @@ def get_github_releases():
         return []
 
 def get_providers():
-    """Discover providers from auth.json + config.yaml."""
+    """Discover providers from auth.json credential_pool + config.yaml custom_providers."""
     try:
         auth = json.load(open(os.path.join(HERMES_HOME, "auth.json")))
     except Exception:
@@ -584,28 +584,70 @@ def get_providers():
 
     pool = auth.get("credential_pool", {}) or {}
     active = auth.get("active_provider")
+    custom_provs = cfg.get("custom_providers", []) or []
+    model_cfg = cfg.get("model", {})
+    active_model_provider = model_cfg.get("provider", "")
+
+    # Collect all known provider IDs (with and without custom: prefix) to avoid duplicates
+    seen = set()
     result = []
 
+    def _norm(name):
+        """Strip custom: prefix for comparison."""
+        return name.replace("custom:", "", 1) if name.startswith("custom:") else name
+
+    # 1) credential_pool from auth.json
     for prov_name, creds in pool.items():
         if not isinstance(creds, list) or not creds:
             continue
         c = creds[0]
+        norm_name = _norm(prov_name)  # Strip custom: prefix for display
         result.append({
-            "id": prov_name,
-            "name": prov_name,
+            "id": norm_name,
+            "name": norm_name,
             "base_url": c.get("base_url", ""),
             "auth_type": c.get("auth_type", "api_key"),
             "status": "active" if c.get("last_status") == "ok" else "error",
-            "is_default": prov_name == active,
+            "is_default": norm_name == active or prov_name == active,
+            "priority": c.get("priority", 0),
+        })
+        seen.add(norm_name)
+
+    # 2) custom_providers from config.yaml
+    for cp in custom_provs:
+        cp_name = cp.get("name", "")
+        if not cp_name or _norm(cp_name) in seen:
+            # If already present from auth.json, update base_url if config has a better one
+            if _norm(cp_name) in seen:
+                for r in result:
+                    if _norm(r["id"]) == _norm(cp_name):
+                        # Prefer config.yaml base_url if present and auth.json has wrong one
+                        cfg_url = cp.get("base_url", "")
+                        if cfg_url and r.get("base_url") != cfg_url:
+                            r["base_url"] = cfg_url
+                        if cp_name == active_model_provider:
+                            r["is_default"] = True
+            continue
+        seen.add(_norm(cp_name))
+        # Look for matching auth.json credential (might have custom: prefix)
+        auth_key = "custom:" + cp_name if ("custom:" + cp_name) in pool else cp_name
+        creds = pool.get(auth_key, [])
+        c = creds[0] if creds and isinstance(creds, list) else {}
+        result.append({
+            "id": cp_name,
+            "name": cp_name,
+            "base_url": cp.get("base_url", "") or c.get("base_url", ""),
+            "auth_type": c.get("auth_type", "api_key"),
+            "status": "active" if c.get("last_status") == "ok" else ("configured" if cp.get("base_url") else "error"),
+            "is_default": cp_name == active_model_provider or cp_name == _norm(active or ""),
             "priority": c.get("priority", 0),
         })
 
-    # Also include active model config
-    model_cfg = cfg.get("model", {})
-    if model_cfg.get("provider") and not any(p["id"] == model_cfg["provider"] for p in result):
+    # 3) If active model provider still not in list, add it from config.yaml model section
+    if active_model_provider and _norm(active_model_provider) not in seen:
         result.insert(0, {
-            "id": model_cfg["provider"],
-            "name": model_cfg["provider"],
+            "id": active_model_provider,
+            "name": active_model_provider,
             "base_url": model_cfg.get("base_url", ""),
             "auth_type": "configured",
             "status": "active",
@@ -653,9 +695,12 @@ def get_models():
     def fetch_models_for_provider(prov):
         base_url = prov.get("base_url", "")
         api_key = None
+        prov_id = prov["id"]
         try:
             auth = json.load(open(os.path.join(HERMES_HOME, "auth.json")))
-            creds = auth.get("credential_pool", {}).get(prov["id"], [])
+            pool = auth.get("credential_pool", {})
+            # Try exact match first, then with custom: prefix
+            creds = pool.get(prov_id, []) or pool.get("custom:" + prov_id, [])
             if creds and isinstance(creds, list):
                 api_key = creds[0].get("access_token")
         except Exception:
@@ -663,17 +708,22 @@ def get_models():
 
         if not api_key or not base_url:
             # Try fallback models even without API key
-            fb = FALLBACK_MODELS.get(prov["id"], [])
-            return [(prov["id"], m, "", None) for m in fb]
+            fb = FALLBACK_MODELS.get(prov_id, [])
+            return [(prov_id, m, "", None) for m in fb]
 
         try:
+            # Avoid double /v1 if base_url already ends with /v1
+            models_url = base_url.rstrip('/')
+            if not models_url.endswith("/v1"):
+                models_url += "/v1"
+            models_url += "/models"
             req = urllib.request.Request(
-                base_url.rstrip('/') + "/v1/models",
+                models_url,
                 headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
             )
             with urllib.request.urlopen(req, timeout=8) as resp:
                 data = json.loads(resp.read())
-                models = [(prov["id"], m.get("id", ""), m.get("owned_by", ""), m.get("created"))
+                models = [(prov_id, m.get("id", ""), m.get("owned_by", ""), m.get("created"))
                         for m in data.get("data", []) if m.get("id")]
                 if models:
                     return models
@@ -681,8 +731,8 @@ def get_models():
             pass
 
         # Fallback to known model lists when API fails
-        fb = FALLBACK_MODELS.get(prov["id"], [])
-        return [(prov["id"], m, "", None) for m in fb]
+        fb = FALLBACK_MODELS.get(prov_id, [])
+        return [(prov_id, m, "", None) for m in fb]
 
     all_models = []
     seen = set()
