@@ -1616,9 +1616,10 @@ def _translate_changelog(changelog, version):
         if not all_items:
             return changelog
 
-        # Batch translate in chunks of 80 items
+        # Batch translate in chunks of 50 items (smaller = more reliable)
         translated = list(all_items)
-        CHUNK = 80
+        CHUNK = 50
+        success_count = 0
         for start in range(0, len(all_items), CHUNK):
             chunk = all_items[start:start + CHUNK]
             numbered = "\n".join(f"{i+1}. {item}" for i, item in enumerate(chunk))
@@ -1628,27 +1629,32 @@ def _translate_changelog(changelog, version):
                 "保持编号格式。技术术语保留英文。\n\n"
                 f"{numbered}"
             )
-            body = json.dumps({
-                "model": "deepseek-chat",
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.1,
-                "max_tokens": 4096,
-            })
-            req = urllib.request.Request(
-                "http://127.0.0.1:3900/v1/chat/completions",
-                data=body.encode(),
-                headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                result = json.loads(resp.read())
-                text = result["choices"][0]["message"]["content"].strip()
-                lines = text.strip().split("\n")
-                for j, line in enumerate(lines):
-                    # Strip "1. " prefix
-                    import re as _re
-                    m = _re.match(r'^\d+\.\s*(.+)', line.strip())
-                    if m and start + j < len(translated):
-                        translated[start + j] = m.group(1).strip()
+            try:
+                body = json.dumps({
+                    "model": "deepseek-chat",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.1,
+                    "max_tokens": 8192,
+                })
+                req = urllib.request.Request(
+                    "http://127.0.0.1:3900/v1/chat/completions",
+                    data=body.encode(),
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    result = json.loads(resp.read())
+                    text = result["choices"][0]["message"]["content"].strip()
+                    lines = text.strip().split("\n")
+                    for j, line in enumerate(lines):
+                        import re as _re
+                        m = _re.match(r'^\d+\.\s*(.+)', line.strip())
+                        if m and start + j < len(translated):
+                            translated[start + j] = m.group(1).strip()
+                            success_count += 1
+            except Exception as chunk_err:
+                # This chunk failed — keep English originals, continue with next chunk
+                print(f"[translate] chunk {start}-{start+CHUNK} failed: {chunk_err}")
+                continue
 
         # Rebuild categorized dict
         translated_cl = {}
@@ -1739,6 +1745,36 @@ def api_version_update_status():
     _VERSION_CACHE["data"] = None
     _VERSION_CACHE["ts"] = 0
     return jsonify({"status": "done" if poll == 0 else "error", "exit_code": poll, "output": stdout[-2000:]})
+
+
+@app.route("/api/version/translate", methods=["POST"])
+def api_version_translate():
+    """Re-translate cached changelog via DeepSeek (independent of GitHub API)."""
+    latest = _get_latest_release()
+    if not latest or not latest.get("body"):
+        return jsonify({"status": "no_data", "message": "无 changelog 数据"}), 404
+
+    version = latest.get("version", "")
+    raw_cl = _parse_changelog(latest["body"])
+    if not raw_cl:
+        return jsonify({"status": "no_items", "message": "changelog 为空"}), 404
+
+    # Force re-translation (clear cache)
+    _TRANSLATED_CACHE["version"] = None
+    _TRANSLATED_CACHE["data"] = None
+
+    translated = _translate_changelog(raw_cl, version)
+    # Check if translation actually changed anything
+    sample_orig = list(raw_cl.values())[0][0] if raw_cl else ""
+    sample_trans = list(translated.values())[0][0] if translated else ""
+    was_translated = sample_orig != sample_trans
+
+    return jsonify({
+        "status": "translated" if was_translated else "fallback",
+        "version": version,
+        "categories": list(translated.keys()),
+        "total_items": sum(len(v) for v in translated.values()),
+    })
 
 
 @app.route("/api/system", methods=["GET"])
