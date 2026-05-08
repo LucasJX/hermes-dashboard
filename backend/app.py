@@ -1117,7 +1117,8 @@ def api_models():
 
 @app.route("/api/config/model", methods=["GET"])
 def api_config_model_get():
-    """Return current model config from config.yaml."""
+    """Return current model config from config.yaml.
+    If provider matches a custom_provider, return that provider's base_url."""
     config_path = os.path.join(HERMES_HOME, "config.yaml")
     try:
         import yaml
@@ -1125,9 +1126,18 @@ def api_config_model_get():
     except Exception:
         cfg = {}
     model_cfg = cfg.get("model", {})
+    provider = model_cfg.get("provider", "")
+    base_url = model_cfg.get("base_url", "")
+
+    # Check custom_providers for a matching provider name
+    for cp in cfg.get("custom_providers", []):
+        if cp.get("name") == provider:
+            base_url = cp.get("base_url", base_url)
+            break
+
     return jsonify({
-        "provider": model_cfg.get("provider", ""),
-        "base_url": model_cfg.get("base_url", ""),
+        "provider": provider,
+        "base_url": base_url,
         "api_key": model_cfg.get("api_key", ""),
         "model": model_cfg.get("default", ""),
     })

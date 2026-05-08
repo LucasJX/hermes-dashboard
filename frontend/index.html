@@ -442,6 +442,12 @@ async function renderDashboard() {
       </div>`;
     $('#app').innerHTML = dashboardHTML;
 
+    // ── Non-MiniMax: set model title from quota data ──
+    if (!quotaAvailable && quota.model) {
+      const mt = $('#qb-model-title');
+      if (mt) mt.textContent = quota.model + ' (' + (quota.provider || '') + ')';
+    }
+
     $$('.rc-item[data-src]').forEach(el => {
       el.addEventListener('click', () => navigate('sessions'));
     });
