@@ -543,6 +543,23 @@ async function renderDashboard() {
 let _versionData = null;
 let _changelogOpen = false;
 
+/* ─── Version localStorage cache (instant display on reload) ─────── */
+const VER_CACHE_KEY = 'hermes_ver_cache';
+const VER_CACHE_TTL = 3600 * 1000; // 1 hour
+
+function _getCachedVersion() {
+  try {
+    const raw = localStorage.getItem(VER_CACHE_KEY);
+    if (!raw) return null;
+    const { data, ts } = JSON.parse(raw);
+    if (Date.now() - ts > VER_CACHE_TTL) return null;
+    return data;
+  } catch { return null; }
+}
+function _setCachedVersion(data) {
+  try { localStorage.setItem(VER_CACHE_KEY, JSON.stringify({ data, ts: Date.now() })); } catch {}
+}
+
 /* ─── Changelog localStorage cache ──────────────────────────────── */
 const CL_CACHE_KEY = 'hermes_cl_'; // prefix, actual key = CL_CACHE_KEY + version
 
@@ -574,14 +591,11 @@ async function _checkVersion() {
   };
   if (!el.local) return;
 
-  try {
-    const data = await api('/version');
+  // Helper to render version data into the banner
+  function _renderVersionData(data) {
+    if (!data) return;
     _versionData = data;
-
-    // Local version badge
     el.local.textContent = 'v' + (data.local_version || '—');
-
-    // Sub text + latest badge
     if (data.update_available) {
       el.sub.innerHTML = `<span class="vb-version-badge vb-update-badge">⬆ v${escapeHtml(data.latest_version)}</span> 有新版本可用`;
     } else if (data.latest_version) {
@@ -589,13 +603,9 @@ async function _checkVersion() {
     } else {
       el.sub.textContent = '无法获取最新版本';
     }
-
-    // Cache changelog: only store if version matches
     if (data.latest_version && data.changelog && Object.keys(data.changelog).length) {
       _setCachedChangelog(data.latest_version, data.changelog);
     }
-
-    // Action buttons
     let btns = '';
     if (data.update_available) {
       btns += `<button class="vb-btn vb-btn-primary" id="vb-update-btn" onclick="_doUpdate()">
@@ -611,10 +621,25 @@ async function _checkVersion() {
       </a>`;
     }
     el.actions.innerHTML = btns;
+  }
 
+  // Step 1: instantly render from localStorage cache (zero latency)
+  const cached = _getCachedVersion();
+  if (cached) {
+    _renderVersionData(cached);
+  }
+
+  // Step 2: fetch fresh data in background, update when ready
+  try {
+    const data = await api('/version');
+    _setCachedVersion(data);
+    _renderVersionData(data);
   } catch (e) {
-    el.sub.textContent = '版本检查失败';
-    el.local.textContent = 'v—';
+    if (!cached) {
+      el.sub.textContent = '版本检查失败';
+      el.local.textContent = 'v—';
+    }
+    // If cached, keep showing cached data (don't overwrite with error)
   }
 }
 
@@ -626,8 +651,8 @@ function _toggleChangelog() {
 
   if (_changelogOpen) {
     panel.classList.add('open');
-    // If no content yet, load and animate
-    if (!panel.innerHTML.trim() && _versionData) {
+    // Always re-render to replay animation
+    if (_versionData) {
       // Try localStorage cache first
       const ver = _versionData.latest_version;
       const cached = ver ? _getCachedChangelog(ver) : null;
@@ -638,6 +663,8 @@ function _toggleChangelog() {
     }
   } else {
     panel.classList.remove('open');
+    // Clear content so animation replays on next open
+    setTimeout(() => { panel.innerHTML = ''; }, 400);
   }
 }
 
@@ -1378,9 +1405,8 @@ async function renderTokens() {
         ${barLegend}
         <div style="display:flex;justify-content:space-between;padding:4px 22px 0">
           ${(() => {
-            const first = monthDays.find(d => d.in + d.out > 0);
             const lastDay = new Date().getDate();
-            return `<span style="font-size:11px;color:var(--ink-3)">${first ? first.dayNum + '日' : '—'}</span><span style="font-size:11px;color:var(--ink-3)">${lastDay}日</span>`;
+            return `<span style="font-size:11px;color:var(--ink-3)">1日</span><span style="font-size:11px;color:var(--ink-3)">${lastDay}日</span>`;
           })()}
         </div>
       </div>
@@ -1594,9 +1620,50 @@ async function renderModels() {
     const cfgUrl      = cfgData.base_url || '';
     const cfgKey      = cfgData.api_key || '';
 
-    // Group models by provider
+    // Group models by provider, splitting into sub-groups when a provider
+    // has models with multiple different owned_by values (e.g. deepseek-chat2api
+    // contains both DeepSeek and Kimi models)
+    const rawByProvider = {};
+    models.forEach(m => { const p = m.provider || 'unknown'; if (!rawByProvider[p]) rawByProvider[p] = []; rawByProvider[p].push(m); });
+
     const byProvider = {};
-    models.forEach(m => { const p = m.provider || 'unknown'; if (!byProvider[p]) byProvider[p] = []; byProvider[p].push(m); });
+    Object.entries(rawByProvider).forEach(([prov, provModels]) => {
+      const ownedBys = [...new Set(provModels.map(m => m.owned_by || '').filter(Boolean))];
+      if (ownedBys.length > 1) {
+        // Split into sub-groups keyed by "provider · owned_by"
+        const subGroups = {};
+        provModels.forEach(m => {
+          const key = m.owned_by || prov;
+          if (!subGroups[key]) subGroups[key] = [];
+          subGroups[key].push(m);
+        });
+        Object.entries(subGroups).forEach(([ob, models]) => {
+          byProvider[prov + ' · ' + ob] = models;
+        });
+      } else {
+        byProvider[prov] = provModels;
+      }
+    });
+
+    // Helper: resolve a chip name (from providers API) to a byProvider key
+    function chipToProviderKey(chipName) {
+      // Exact match first (works for providers without sub-groups)
+      if (byProvider[chipName]) return chipName;
+      // Special mapping for Chat2API chips
+      const chipLower = chipName.toLowerCase();
+      if (chipLower === 'deepseek-chat2api') {
+        // Find the sub-group whose owned_by starts with "DeepSeek" or is empty
+        const key = Object.keys(byProvider).find(k => k.startsWith('deepseek-chat2api') && k.includes('DeepSeek'));
+        return key || chipName;
+      }
+      if (chipLower === 'kimi-chat2api') {
+        const key = Object.keys(byProvider).find(k => k.toLowerCase().includes('kimi'));
+        return key || chipName;
+      }
+      // Fallback: find any byProvider key that starts with chipName
+      const fuzzy = Object.keys(byProvider).find(k => k.startsWith(chipName + ' · '));
+      return fuzzy || chipName;
+    }
 
     // Find active provider info
     const activeProv = providers.find(p => p.name === cfgProvider) || providers.find(p => p.is_default) || providers[0];
@@ -1648,18 +1715,18 @@ async function renderModels() {
           </div>
           <div style="display:flex;align-items:center;gap:12px" id="ms-model-row">
             <label style="width:80px;flex-shrink:0;font-size:13px;font-weight:500;color:var(--ink-2)">模型</label>
-            <select id="ms-model-select" style="flex:1;height:36px;padding:0 10px;border-radius:10px;border:1px solid var(--border-1);background:var(--surface-2);color:var(--ink);font-size:13px;appearance:none;-webkit-appearance:none;background-image:url(&quot;data:image/svg+xml,%3Csvg xmlns=&quot;http://www.w3.org/2000/svg&quot; width=&quot;12&quot; height=&quot;12&quot; viewBox=&quot;0 0 12 12&quot;%3E%3Cpath fill=&quot;%238e8e93&quot; d=&quot;M6 8L1 3h10z&quot;/%3E%3C/svg%3E&quot;);background-repeat:no-repeat;background-position:right 10px center;padding-right:30px">
+            <select id="ms-model-select" style="flex:1;height:36px;padding:0 10px;border-radius:10px;background:rgba(255,255,255,0.06);backdrop-filter:blur(20px) saturate(180%);border:1px solid rgba(255,255,255,0.12);color:var(--ink);font-size:13px;appearance:none;-webkit-appearance:none;background-image:url(&quot;data:image/svg+xml,%3Csvg xmlns=&quot;http://www.w3.org/2000/svg&quot; width=&quot;12&quot; height=&quot;12&quot; viewBox=&quot;0 0 12 12&quot;%3E%3Cpath fill=&quot;%238e8e93&quot; d=&quot;M6 8L1 3h10z&quot;/%3E%3C/svg%3E&quot;);background-repeat:no-repeat;background-position:right 10px center;padding-right:30px">
               <option value="">— 选择模型 —</option>
             </select>
-            <input id="ms-model-input" type="text" placeholder="手动输入模型名称" style="flex:1;height:36px;padding:0 10px;border-radius:10px;border:1px solid var(--border-1);background:var(--surface-2);color:var(--ink);font-size:13px;display:none" />
+            <input id="ms-model-input" type="text" placeholder="手动输入模型名称" style="flex:1;height:36px;padding:0 10px;border-radius:10px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);backdrop-filter:blur(20px) saturate(180%);color:var(--ink);font-size:13px;display:none" />
           </div>
           <div style="display:flex;align-items:center;gap:12px">
             <label style="width:80px;flex-shrink:0;font-size:13px;font-weight:500;color:var(--ink-2)">Base URL</label>
-            <input id="ms-base-url" type="text" placeholder="https://api.example.com/v1" value="${escapeHtml(cfgUrl)}" style="flex:1;height:36px;padding:0 10px;border-radius:10px;border:1px solid var(--border-1);background:var(--surface-2);color:var(--ink);font-size:13px" />
+            <input id="ms-base-url" type="text" placeholder="https://api.example.com/v1" value="${escapeHtml(cfgUrl)}" style="flex:1;height:36px;padding:0 10px;border-radius:10px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);backdrop-filter:blur(20px) saturate(180%);color:var(--ink);font-size:13px" />
           </div>
           <div style="display:flex;align-items:center;gap:12px">
             <label style="width:80px;flex-shrink:0;font-size:13px;font-weight:500;color:var(--ink-2)">API Key</label>
-            <input id="ms-api-key" type="password" placeholder="输入 API Key（留空不改）" style="flex:1;height:36px;padding:0 10px;border-radius:10px;border:1px solid var(--border-1);background:var(--surface-2);color:var(--ink);font-size:13px" />
+            <input id="ms-api-key" type="password" placeholder="输入 API Key（留空不改）" style="flex:1;height:36px;padding:0 10px;border-radius:10px;border:1px solid rgba(255,255,255,0.12);background:rgba(255,255,255,0.06);backdrop-filter:blur(20px) saturate(180%);color:var(--ink);font-size:13px" />
           </div>
           <div style="display:flex;gap:8px;margin-top:4px">
             <button class="btn btn-primary" id="ms-save-btn" style="border-radius:9999px;padding:8px 24px;font-weight:600">保存并应用</button>
@@ -1678,7 +1745,7 @@ async function renderModels() {
     const modelGridHtml = sortedProvs.map(prov => `
       <div style="margin-bottom:20px">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-          <span style="width:8px;height:8px;border-radius:50%;background:${providers.find(p => p.name === prov)?.status === 'active' ? '#34c759' : 'var(--ink-3)'}"></span>
+          <span style="width:8px;height:8px;border-radius:50%;background:${providers.find(p => p.name === (prov.includes(' · ') ? prov.split(' · ')[0] : prov))?.status === 'active' ? '#34c759' : 'var(--ink-3)'}"></span>
           <span style="font-size:12px;font-weight:600;color:var(--ink-2);text-transform:uppercase;letter-spacing:0.04em">${escapeHtml(prov)}</span>
           <span style="font-size:11px;color:var(--ink-3);background:var(--surface-2);padding:1px 8px;border-radius:9999px">${(byProvider[prov] || []).length}</span>
         </div>
@@ -1729,10 +1796,12 @@ async function renderModels() {
 
     // Provider chip selection
     let selectedProv = cfgProvider || '';
+    let selectedByProvKey = chipToProviderKey(cfgProvider || '');
     $('#ms-prov-chips').addEventListener('click', (e) => {
       const chip = e.target.closest('[data-prov]');
       if (!chip) return;
       selectedProv = chip.dataset.prov;
+      selectedByProvKey = chipToProviderKey(selectedProv);
       const isCustom = selectedProv === 'custom';
       // Update chip styles
       $('#ms-prov-chips').querySelectorAll('button').forEach(b => {
@@ -1744,7 +1813,7 @@ async function renderModels() {
       const provInfo = allChips.find(p => p.name === selectedProv);
       $('#ms-base-url').value = provInfo ? provInfo.url : '';
       // Show model select or input
-      const provModels = byProvider[selectedProv] || [];
+      const provModels = byProvider[selectedByProvKey] || [];
       const modelSel = $('#ms-model-select');
       const modelInp = $('#ms-model-input');
       if (isCustom || !provModels.length) {
@@ -1760,7 +1829,7 @@ async function renderModels() {
 
     // Init model list for current provider
     (function initModelList() {
-      const provModels = byProvider[cfgProvider] || [];
+      const provModels = byProvider[chipToProviderKey(cfgProvider)] || [];
       const modelSel = $('#ms-model-select');
       const modelInp = $('#ms-model-input');
       if (provModels.length) {
@@ -1819,8 +1888,10 @@ async function renderModels() {
       card.addEventListener('click', () => {
         const modelId = card.dataset.model;
         const provId  = card.dataset.provider;
+        // Extract base provider name (before ' · ' if composite key)
+        const baseProv = provId.includes(' · ') ? provId.split(' · ')[0] : provId;
         // Trigger provider chip click
-        const chip = $('#ms-prov-chips').querySelector('[data-prov="' + provId + '"]');
+        const chip = $('#ms-prov-chips').querySelector('[data-prov="' + baseProv + '"]');
         if (chip) chip.click();
         // Set model value
         const modelSel = $('#ms-model-select');

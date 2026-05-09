@@ -140,7 +140,7 @@ def validate_token(token):
 
 # ─── Bearer-token auth guard (replaces cookie session) ────────────────────────
 PUBLIC_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/auth/session",
-                "/health", "/api/stats", "/api/quota", "/api/version/inject"}
+                "/health", "/api/stats", "/api/quota", "/api/version/inject", "/api/version", "/api/releases"}
 
 @app.before_request
 def require_auth():
