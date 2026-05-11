@@ -185,6 +185,82 @@ ul { list-style: none; }
   white-space: nowrap;
 }
 
+/* Theme Toggle + Avatar — simple transparent icons ──────────────────── */
+.topdock-theme,
+.topdock-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--ink-2);
+  transition: background var(--transition), color var(--transition);
+  flex-shrink: 0;
+  font-size: 16px;
+  line-height: 1;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+.topdock-theme:hover,
+.topdock-avatar:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+/* Dropdown Menu ──────────────────────────────────────────────────────── */
+.topdock-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 140px;
+  background: var(--glass-1);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  border-radius: 14px;
+  box-shadow: 0 8px 32px var(--glass-shadow);
+  padding: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-6px);
+  transition: opacity 0.2s, transform 0.2s;
+  z-index: 1100;
+}
+.topdock-dropdown.open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+.topdock-dropdown-item {
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--ink-2);
+  font-size: 13px;
+  transition: background var(--transition), color var(--transition);
+}
+.topdock-dropdown-item:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+.topdock-dropdown-danger:hover {
+  background: rgba(255,59,48,0.12);
+  color: var(--red);
+}
+[data-theme="dark"] .topdock-dropdown {
+  background: var(--glass-1);
+  border-color: var(--glass-border);
+}
+[data-theme="dark"] .topdock-dropdown-item:hover {
+  background: var(--surface-2);
+}
+[data-theme="dark"] .topdock-dropdown-danger:hover {
+  background: rgba(255,59,48,0.15);
+}
+
 /* Right Controls Dock — same height as nav dock ─────────────────── */
 .topdock-right {
   display: flex;

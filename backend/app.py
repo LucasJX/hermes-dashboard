@@ -1427,7 +1427,9 @@ def _get_local_version():
     """Get installed Hermes version from `hermes --version`."""
     try:
         ver = subprocess.run(
-            ["hermes", "--version"], capture_output=True, text=True, timeout=5
+            ["/home/flypigs/.local/bin/hermes", "--version"],
+            capture_output=True, text=True, timeout=5,
+            cwd=HERMES_HOME
         )
         if ver.returncode == 0:
             first_line = ver.stdout.strip().split("\n")[0]
