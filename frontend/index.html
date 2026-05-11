@@ -4,84 +4,82 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hermes Dashboard</title>
-  <link rel="stylesheet" href="/css/style.css" />
+  <link rel="stylesheet" href="/css/style.css?v=4.1" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦞</text></svg>" />
 </head>
 <body>
 
 <!-- ─── App Shell (flex column) ──────────────────────────────────────── -->
-<div class="app-shell">
+<div class="app-shell" role="main" aria-label="Hermes Dashboard">
 
 <!-- ─── Top Dock Bar (nav dock + controls dock, same style) ─────────────── -->
-<div class="topdock-wrap">
+<div class="topdock-wrap" role="navigation" aria-label="主导航">
   <!-- Left: Navigation Dock -->
-  <div class="topdock" id="topdock">
-    <div class="dk active" data-page="dashboard">
-      <span class="dk-icon">🏠</span>
+  <div class="topdock" id="topdock" role="menubar" aria-label="导航菜单">
+    <div class="dk active" data-page="dashboard" role="menuitem" aria-current="page" tabindex="0">
+      <span class="dk-icon" aria-hidden="true">🏠</span>
       <span class="dk-label">主页</span>
     </div>
-    <div class="dk" data-page="sessions">
-      <span class="dk-icon">💬</span>
+    <div class="dk" data-page="sessions" role="menuitem" tabindex="0">
+      <span class="dk-icon" aria-hidden="true">💬</span>
       <span class="dk-label">会话</span>
     </div>
-    <div class="dk" data-page="tokens">
-      <span class="dk-icon">📊</span>
+    <div class="dk" data-page="tokens" role="menuitem" tabindex="0">
+      <span class="dk-icon" aria-hidden="true">📊</span>
       <span class="dk-label">配额</span>
     </div>
-    <div class="dk" data-page="channels">
-      <span class="dk-icon">📡</span>
+    <div class="dk" data-page="channels" role="menuitem" tabindex="0">
+      <span class="dk-icon" aria-hidden="true">📡</span>
       <span class="dk-label">频道</span>
     </div>
-    <div class="dk" data-page="models">
-      <span class="dk-icon">🤖</span>
+    <div class="dk" data-page="models" role="menuitem" tabindex="0">
+      <span class="dk-icon" aria-hidden="true">🤖</span>
       <span class="dk-label">模型</span>
     </div>
-    <div class="dk" data-page="skills">
-      <span class="dk-icon">⚙️</span>
+    <div class="dk" data-page="skills" role="menuitem" tabindex="0">
+      <span class="dk-icon" aria-hidden="true">⚙️</span>
       <span class="dk-label">技能</span>
     </div>
-    <div class="dk" data-page="cron">
-      <span class="dk-icon">⏰</span>
+    <div class="dk" data-page="cron" role="menuitem" tabindex="0">
+      <span class="dk-icon" aria-hidden="true">⏰</span>
       <span class="dk-label">定时</span>
     </div>
-    <div class="dk" data-page="logs">
-      <span class="dk-icon">📋</span>
+    <div class="dk" data-page="logs" role="menuitem" tabindex="0">
+      <span class="dk-icon" aria-hidden="true">📋</span>
       <span class="dk-label">日志</span>
     </div>
   </div>
 
-  <!-- Right: Controls Dock (theme + avatar) -->
-  <div class="topdock-right" id="topdock-right">
-    <div id="theme-toggle" title="切换主题" style="display:flex;align-items:center;padding:5px 10px;border-radius:10px;cursor:pointer;color:var(--ink-2);">
-      <span style="font-size:18px;line-height:1;">☀️</span>
-    </div>
-    <!-- Expanded controls (hidden by default, slide in when expanded) -->
-    <div class="right-controls-expanded" id="right-controls-expanded" style="display:flex;align-items:center;gap:6px;opacity:0;transform:translateX(12px);transition:all 0.3s cubic-bezier(0.4,0,0.2,1);overflow:hidden;white-space:nowrap;">
-      <div class="right-control-item" id="rc-account" onclick="navigate('account'); toggleRightDock();" style="padding:5px 12px;border-radius:10px;cursor:pointer;font-size:13px;color:var(--ink-2);transition:background 0.18s,color 0.18s;" onmouseover="this.style.background='var(--surface-2)';this.style.color='var(--ink)'" onmouseout="this.style.background='';this.style.color='var(--ink-2)'">账号管理</div>
-      <div class="right-control-item" onclick="doLogout(); toggleRightDock();" style="padding:5px 12px;border-radius:10px;cursor:pointer;font-size:13px;color:var(--red);transition:background 0.18s;" onmouseover="this.style.background='rgba(255,59,48,0.1)'" onmouseout="this.style.background=''">退出</div>
-    </div>
-    <div id="avatar-btn" title="账号管理" style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:var(--blue);font-size:14px;cursor:pointer;flex-shrink:0;position:relative;">
-      🦞
-    </div>
+  <!-- Right: Theme toggle + Avatar (all standalone, no overflow:hidden wrapper) -->
+  <div class="topdock-theme" id="theme-toggle" title="切换主题" role="button" aria-label="切换主题" tabindex="0">
+    <span aria-hidden="true">☀️</span>
+  </div>
+  <div class="topdock-avatar" id="avatar-btn" title="账号管理" role="button" aria-label="账号管理" tabindex="0">
+    🦞
+  </div>
+  <!-- Floating dropdown menu -->
+  <div class="topdock-dropdown" id="user-dropdown" role="menu" aria-label="用户菜单">
+    <div class="topdock-dropdown-item" id="rc-account" role="menuitem" tabindex="0">账号管理</div>
+    <div class="topdock-dropdown-item topdock-dropdown-danger" id="rc-logout" role="menuitem" tabindex="0">退出</div>
   </div>
 </div>
 
 <!-- ─── Login Overlay ───────────────────────────────────────────────── -->
-<div id="login-overlay" class="login-overlay" style="display:none;">
+<div id="login-overlay" class="login-overlay" role="dialog" aria-label="登录" style="display:none;">
   <div class="login-card">
-    <div class="login-logo">🦞</div>
+    <div class="login-logo" aria-hidden="true">🦞</div>
     <div class="login-title">Hermes Dashboard</div>
     <div class="login-form">
       <div class="login-field">
-        <label class="login-label">用户名</label>
-        <input class="login-input" id="li-username" type="text" placeholder="用户名" autocomplete="username" />
+        <label class="login-label" for="li-username">用户名</label>
+        <input class="login-input" id="li-username" type="text" placeholder="用户名" autocomplete="username" aria-required="true" />
       </div>
       <div class="login-field">
-        <label class="login-label">密码</label>
-        <input class="login-input" id="li-password" type="password" placeholder="密码" autocomplete="current-password" />
+        <label class="login-label" for="li-password">密码</label>
+        <input class="login-input" id="li-password" type="password" placeholder="密码" autocomplete="current-password" aria-required="true" />
       </div>
-      <div class="login-error" id="li-error" style="display:none;"></div>
-      <button class="login-btn" id="li-submit">登录</button>
+      <div class="login-error" id="li-error" role="alert" aria-live="polite" style="display:none;"></div>
+      <button class="login-btn" id="li-submit" type="submit">登录</button>
     </div>
   </div>
 </div>
@@ -888,6 +886,7 @@ async function renderChannels() {
           background:var(--glass-1); backdrop-filter:blur(24px) saturate(160%); -webkit-backdrop-filter:blur(24px) saturate(160%);
           border:1px solid var(--glass-border); border-radius:var(--radius-xl); padding:18px 20px;
           display:flex; flex-direction:column; gap:4px;
+          will-change:transform; -webkit-backdrop-filter: blur(24px) saturate(160%);
         }
         .ch-hero-val { font-size:28px; font-weight:700; letter-spacing:-0.5px; color:var(--ink); }
         .ch-hero-label { font-size:12px; color:var(--ink-3); font-weight:500; }
@@ -897,6 +896,7 @@ async function renderChannels() {
           border:1px solid var(--glass-border); border-radius:var(--radius-xl);
           padding:16px 20px; display:flex; align-items:center; gap:16px;
           transition:border-color var(--transition), box-shadow var(--transition), transform var(--transition);
+          will-change:transform;
         }
         .ch-row:hover { border-color:rgba(0,102,204,0.3); box-shadow:0 2px 12px rgba(0,0,0,0.06); transform:translateY(-1px); }
         .ch-row-icon {
@@ -1306,6 +1306,28 @@ async function renderTokens() {
     const areaIn  = lineIn  + ` L${PAD_L + chartW},${PAD_T + chartH} Z`;
     const areaOut = lineOut + ` L${PAD_L + chartW},${PAD_T + chartH} Z`;
 
+    // Data point markers + labels (theme-aware via var(--ink))
+    const dataPointsIn = monthDays.map((d, i) => {
+      const x = PAD_L + i * stepX;
+      const y = PAD_T + chartH - (d.in / maxVal) * chartH;
+      const showLabel = i === 0 || i === monthDays.length - 1 || (d.dayNum % 5 === 0);
+      const dot = `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.5" fill="#0066cc" opacity="0.9" filter="url(#glowBlue)"/>`;
+      const label = showLabel && d.in > 0
+        ? `<text x="${x.toFixed(1)}" y="${(y - 6).toFixed(1)}" text-anchor="middle" fill="var(--ink)" font-size="9" font-weight="500" font-family="var(--font)">${fmtK(d.in)}</text>`
+        : '';
+      return dot + label;
+    }).join('');
+    const dataPointsOut = monthDays.map((d, i) => {
+      const x = PAD_L + i * stepX;
+      const y = PAD_T + chartH - (d.out / maxVal) * chartH;
+      const showLabel = i === 0 || i === monthDays.length - 1 || (d.dayNum % 5 === 0);
+      const dot = `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.5" fill="#e07b39" opacity="0.9" filter="url(#glowOrange)"/>`;
+      const label = showLabel && d.out > 0
+        ? `<text x="${x.toFixed(1)}" y="${(y - 6).toFixed(1)}" text-anchor="middle" fill="var(--ink)" font-size="9" font-weight="500" font-family="var(--font)">${fmtK(d.out)}</text>`
+        : '';
+      return dot + label;
+    }).join('');
+
     const yLabels = [
       { v: maxVal, y: PAD_T },
       { v: maxVal * 0.5, y: PAD_T + chartH * 0.5 },
@@ -1325,7 +1347,7 @@ async function renderTokens() {
     }).join('');
 
     const barSection = monthDays.length > 0
-      ? `<svg id="trend-svg" viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px;overflow:visible">
+      ? `<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><svg id="trend-svg" viewBox="0 0 ${W} ${H}" style="width:100%;min-width:${W}px;height:${H}px;overflow:visible">
           <defs>
             <linearGradient id="areaGradIn" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stop-color="#0066cc" stop-opacity="0.3"/>
@@ -1335,15 +1357,25 @@ async function renderTokens() {
               <stop offset="0%" stop-color="#e07b39" stop-opacity="0.3"/>
               <stop offset="100%" stop-color="#e07b39" stop-opacity="0.04"/>
             </linearGradient>
+            <filter id="glowBlue" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"/>
+              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+            <filter id="glowOrange" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"/>
+              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
           </defs>
           ${gridLines}
           <path d="${areaIn}"  fill="url(#areaGradIn)" />
           <path d="${areaOut}" fill="url(#areaGradOut)" />
-          <path d="${lineIn}"  fill="none" stroke="#0066cc" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-          <path d="${lineOut}" fill="none" stroke="#e07b39" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+          <path d="${lineIn}"  fill="none" stroke="#0066cc" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" filter="url(#glowBlue)"/>
+          <path d="${lineOut}" fill="none" stroke="#e07b39" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" filter="url(#glowOrange)"/>
+          ${dataPointsIn}
+          ${dataPointsOut}
           ${yAxis}
           ${xAxis}
-        </svg>`
+        </svg></div>`
       : '<div class="text-muted text-sm">本月暂无数据</div>';
 
     const barLegend = monthDays.length > 0
@@ -1413,7 +1445,7 @@ async function renderTokens() {
 
       <div class="card-row-2col" style="margin-bottom:16px">
         <div class="card-col">
-          <div class="card" style="height:100%">
+          <div class="card" style="min-height:100%">
             <div class="card-title-row" style="margin-bottom:12px">
               <div class="card-title"><span class="card-title-icon">◆</span>模型分布</div>
             </div>
@@ -1431,7 +1463,7 @@ async function renderTokens() {
           </div>
         </div>
         <div class="card-col">
-          <div class="card" style="height:100%">
+          <div class="card" style="min-height:100%">
             <div class="card-title-row" style="margin-bottom:12px">
               <div class="card-title"><span class="card-title-icon">◆</span>来源分布</div>
             </div>
@@ -1544,7 +1576,7 @@ function renderCronList(jobs) {
         <div class="card-title"><span class="card-title-icon">⏰</span>Cron 任务</div>
         <button class="btn btn-primary btn-sm" id="btn-new-cron">+ 新建任务</button>
       </div>
-      <div id="cron-list" style="margin-top:12px">
+      <div id="cron-list" class="cron-list" style="margin-top:12px">
         ${jobs.length ? jobs.map(j => buildCronCardHTML(j)).join('') : `
           <div class="empty"><div class="empty-icon">⏰</div><div class="empty-text">暂无定时任务</div></div>`}
       </div>
@@ -2435,36 +2467,47 @@ function showApp(res) {
   navigate(target);
 }
 
-/* ─── Avatar Menu (Dock Expansion) ──────────────────────────────── */
-let rightDockExpanded = false;
+/* ─── Avatar Dropdown Menu ──────────────────────────────── */
+let userMenuOpen = false;
 
-function toggleRightDock() {
-  const dock = $('#topdock-right');
-  const controls = $('#right-controls-expanded');
-  rightDockExpanded = !rightDockExpanded;
-  if (rightDockExpanded) {
-    dock.classList.add('expanded');
-    // Animate controls in
-    requestAnimationFrame(() => {
-      controls.style.opacity = '1';
-      controls.style.transform = 'translateX(0)';
-    });
+function toggleUserMenu() {
+  const dropdown = $('#user-dropdown');
+  const avatar = $('#avatar-btn');
+  userMenuOpen = !userMenuOpen;
+  if (userMenuOpen) {
+    // Position dropdown below avatar
+    const rect = avatar.getBoundingClientRect();
+    dropdown.style.top = (rect.bottom + 6) + 'px';
+    dropdown.style.right = (window.innerWidth - rect.right) + 'px';
+    dropdown.classList.add('open');
   } else {
-    controls.style.opacity = '0';
-    controls.style.transform = 'translateX(12px)';
-    setTimeout(() => dock.classList.remove('expanded'), 300);
+    dropdown.classList.remove('open');
   }
 }
 
 $('#avatar-btn').addEventListener('click', e => {
   e.stopPropagation();
-  toggleRightDock();
+  toggleUserMenu();
+});
+
+$('#rc-account').addEventListener('click', () => {
+  toggleUserMenu();
+  navigate('account');
+});
+
+$('#rc-logout').addEventListener('click', () => {
+  toggleUserMenu();
+  doLogout();
 });
 
 document.addEventListener('click', e => {
-  if (rightDockExpanded && !$('#right-controls-expanded').contains(e.target) && !$('#avatar-btn').contains(e.target)) {
-    toggleRightDock();
+  if (userMenuOpen && !$('#user-dropdown').contains(e.target) && !$('#avatar-btn').contains(e.target)) {
+    toggleUserMenu();
   }
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && userMenuOpen) toggleUserMenu();
 });
 
 /* ─── Account Page ─────────────────────────────────────────────────── */

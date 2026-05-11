@@ -54,6 +54,19 @@ class Proxy(http.server.BaseHTTPRequestHandler):
                                      "Content-Type, Cookie, Authorization, X-Requested-With")
                     self.end_headers()
                     self.wfile.write(data)
+            except urllib.error.HTTPError as e:
+                # Pass through backend HTTP error codes (401, 403, 404, 500, etc.)
+                data = e.read()
+                self.send_response(e.code)
+                self.send_header("Content-Type", "application/json")
+                allow_origin = fwd_headers.get("Origin", "*")
+                self.send_header("Access-Control-Allow-Origin", allow_origin)
+                self.send_header("Access-Control-Allow-Credentials", "true")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers",
+                                 "Content-Type, Cookie, Authorization, X-Requested-With")
+                self.end_headers()
+                self.wfile.write(data)
             except urllib.error.URLError as e:
                 self.send_error(502, "Backend error: %s" % e)
 

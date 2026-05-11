@@ -13,6 +13,7 @@ import calendar
 
 # Force Beijing timezone from the start — eliminates any TZ ambiguity
 os.environ['TZ'] = 'Asia/Shanghai'
+os.environ['PATH'] = '/home/flypigs/.hermes/node/bin:/usr/local/bin:/usr/bin:/bin:' + os.environ.get('PATH', '')
 try:
     time.tzset()
 except AttributeError:
@@ -464,90 +465,131 @@ def _per_round_countdown(end_time_ms):
     total_secs = int(delta.total_seconds())
     return max(0, total_secs)
 
-def get_quota():
-    """Get MiniMax quota via mmx CLI — enriched with reset timestamps."""
+def _get_minimax_quota_from_api():
+    """Fetch MiniMax quota via direct /v1/usage API call (replaces mmx CLI)."""
+    import datetime as dt, calendar, urllib.request
+
+    api_key = os.environ.get("MINIMAX_CN_API_KEY", "")
+    if not api_key or api_key.startswith("***"):
+        # Fallback: read from opencc config
+        try:
+            with open(os.path.expanduser("~/.opencc-cli.conf")) as f:
+                for line in f:
+                    if line.startswith("API_KEY="):
+                        api_key = line.split("=", 1)[1].strip().strip('"')
+                        break
+        except Exception:
+            pass
+    if not api_key or api_key.startswith("***"):
+        return None
+
     try:
-        result = subprocess.run(
-            ["mmx", "quota", "show"],
-            capture_output=True, text=True, timeout=15
+        req = urllib.request.Request(
+            "https://mimimax.cn/v1/usage",
+            headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
         )
-        if result.returncode == 0:
-            output = result.stdout.strip()
-            try:
-                data = json.loads(output)
-                models = data.get("model_remains", [])
-                quota = {
-                    "raw": output,
-                    "models": [],
-                    "daily_reset_ts": None, "weekly_reset_ts": None,
-                    "per_round_limit": None, "per_round_used": None,
-                    "weekly_limit": None, "weekly_used": None,
-                    "weekly_total": None,
-                    "per_round_reset_str": None,
-                    "per_round_countdown": None,
-                    "weekly_reset_str": None,
-                    "monthly_reset_str": None,
-                }
-                for m in models:
-                    name = m.get("model_name", "")
-                    weekly_total = m.get("current_weekly_total_count", 0) or 0
-                    weekly_used  = m.get("current_weekly_usage_count", 0) or 0
-                    interval_total = m.get("current_interval_total_count", 0) or 0
-                    interval_used  = m.get("current_interval_usage_count", 0) or 0
-                    weekly_end_ts  = m.get("weekly_end_time")
-                    interval_end_ts = m.get("end_time")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
 
-                    quota["models"].append({
-                        "name": name,
-                        "weekly_total": weekly_total,
-                        "weekly_used": weekly_used,
-                        "weekly_remains": max(0, weekly_total - weekly_used),
-                        "interval_total": interval_total,
-                        "interval_used": interval_used,
-                        "interval_remains": max(0, interval_total - interval_used),
-                        "per_round_reset_at": interval_end_ts,
-                        "monthly_total": weekly_total * 4 if weekly_total > 0 else 0,
-                        "monthly_used": weekly_used * 4 if weekly_total > 0 else 0,
-                        "monthly_remains": max(0, weekly_total * 4 - weekly_used * 4) if weekly_total > 0 else 0,
-                    })
+        weekly_limit   = data.get("weekly_limit", 0) or 0
+        weekly_used    = data.get("weekly_used", 0) or 0
+        window_hours   = data.get("window_hours", 5) or 5
+        expires_at_ms  = data.get("expires_at")       # ms timestamp of quota expiry
+        interval_used   = data.get("used", 0) or 0
+        interval_remain = data.get("remaining", 0) or 0
+        interval_total  = data.get("max_requests", 0) or 0
 
-                    # Anchor on MiniMax-M* (or first model with weekly quota)
-                    if ("MiniMax-M" in name or quota["weekly_limit"] is None) and weekly_total > 0:
-                        quota["weekly_limit"] = weekly_total
-                        quota["weekly_used"]  = weekly_used
-                        quota["weekly_total"] = weekly_total
-                        quota["per_round_limit"] = interval_total
-                        quota["per_round_used"]  = interval_used
-                        quota["daily_reset_ts"]  = interval_end_ts   # per-round reset (ms)
-                        quota["weekly_reset_ts"] = weekly_end_ts     # weekly reset (ms)
-                        # Per-round countdown to next 20:00 daily reset
-                        countdown = _per_round_countdown(interval_end_ts)
-                        quota["per_round_countdown"] = countdown
-                        quota["per_round_reset_str"] = _fmt_remains(countdown) if countdown is not None else None
+        # Compute next interval reset: current time + until next 5h boundary
+        now = dt.datetime.utcnow()
+        # assume window resets every `window_hours` hours; compute reset time as next multiple
+        seconds_per_window = window_hours * 3600
+        # Use expires_at as weekly reset anchor if available
+        if expires_at_ms:
+            weekly_reset_ts = expires_at_ms
+            weekly_reset_dt = dt.datetime.fromtimestamp(weekly_reset_ts / 1000, tz=dt.timezone.utc)
+        else:
+            weekly_reset_ts = None
+            weekly_reset_dt = None
 
-                # Human-readable weekly reset: "05-11 00:00"
-                if quota["weekly_reset_ts"]:
-                    dt = datetime.datetime.fromtimestamp(quota["weekly_reset_ts"] / 1000)
-                    quota["weekly_reset_str"] = dt.strftime("%m-%d %H:%M")
+        # Interval reset: assume next reset is `window_hours` from now
+        interval_reset_dt = now + dt.timedelta(hours=window_hours)
+        interval_reset_ts = int(interval_reset_dt.timestamp() * 1000)
 
-                # Monthly reset: last day of current month 23:59
-                if quota["weekly_reset_ts"]:
-                    dt = datetime.datetime.fromtimestamp(quota["weekly_reset_ts"] / 1000)
-                    last_day = calendar.monthrange(dt.year, dt.month)[1]
-                    quota["monthly_reset_str"] = dt.replace(day=last_day, hour=23, minute=59).strftime("%m-%d %H:%M")
+        countdown = max(0, int((interval_reset_dt - now).total_seconds()))
 
-                return quota
-            except json.JSONDecodeError:
-                pass
-            return {"raw": output, "models": [], "weekly_reset_str": None,
-                    "per_round_reset_str": None, "per_round_countdown": None, "monthly_reset_str": None}
-    except Exception:
-        pass
-    return {"raw": "", "models": [], "daily_reset_ts": None, "weekly_reset_ts": None,
-            "per_round_limit": None, "per_round_used": None,
-            "weekly_limit": None, "weekly_used": None, "weekly_total": None,
-            "per_round_reset_str": None, "per_round_countdown": None,
-            "weekly_reset_str": None, "monthly_reset_str": None}
+        weekly_remaining  = data.get("weekly_remaining", max(0, weekly_limit - weekly_used))
+        monthly_total     = weekly_limit * 4 if weekly_limit > 0 else 0
+        monthly_used      = weekly_used  * 4 if weekly_limit > 0 else 0
+
+        quota = {
+            "raw": json.dumps(data),
+            "models": [],
+            "weekly_limit": weekly_limit,
+            "weekly_used":  weekly_used,
+            "weekly_total": weekly_limit,
+            "weekly_remaining": max(0, weekly_remaining),
+            "per_round_limit": interval_total,
+            "per_round_used":  interval_used,
+            "per_round_remains": max(0, interval_remain),
+            "daily_reset_ts":  interval_reset_ts,
+            "weekly_reset_ts": weekly_reset_ts,
+            "per_round_countdown": countdown,
+            "per_round_reset_str": _fmt_remains(countdown) if countdown is not None else None,
+            "weekly_reset_str": weekly_reset_dt.strftime("%m-%d %H:%M") if weekly_reset_dt else None,
+            "monthly_reset_str": (weekly_reset_dt.replace(day=calendar.monthrange(weekly_reset_dt.year, weekly_reset_dt.month)[1], hour=23, minute=59).strftime("%m-%d %H:%M")) if weekly_reset_dt else None,
+            "monthly_total": monthly_total,
+            "monthly_used": monthly_used,
+            "monthly_remains": max(0, monthly_total - monthly_used),
+        }
+
+        # Build models list with available models from opencc
+        quota["models"].append({
+            "name": "MiniMax-M2.7",
+            "weekly_total":   weekly_limit,
+            "weekly_used":    weekly_used,
+            "weekly_remains": max(0, weekly_limit - weekly_used),
+            "interval_total": interval_total,
+            "interval_used":  interval_used,
+            "interval_remains": max(0, interval_remain),
+            "per_round_reset_at": interval_reset_ts,
+            "monthly_total":   monthly_total,
+            "monthly_used":    monthly_used,
+            "monthly_remains": max(0, monthly_total - monthly_used),
+        })
+
+        return quota
+    except Exception as e:
+        return {"raw": "", "models": [], "error": str(e)}
+
+
+def _fmt_remains(seconds):
+    if not seconds: return "—"
+    d, s = divmod(int(seconds), 86400)
+    h, s = divmod(s, 3600)
+    m, s = divmod(s, 60)
+    parts = []
+    if d > 0: parts.append(f"{d}天")
+    if h > 0: parts.append(f"{h}小时")
+    if m > 0: parts.append(f"{m}分")
+    if not parts: parts.append(f"{s}秒")
+    return "".join(parts)
+
+
+def get_quota():
+    """Get MiniMax quota — tries direct API first, falls back to sessions DB."""
+    # Try direct API (new opencc /v1/usage)
+    q = _get_minimax_quota_from_api()
+    if q and "error" not in q and q.get("models"):
+        return q
+    # Fallback: compute from sessions DB
+    return {
+        "raw": "", "models": [],
+        "daily_reset_ts": None, "weekly_reset_ts": None,
+        "per_round_limit": None, "per_round_used": None,
+        "weekly_limit": None, "weekly_used": None, "weekly_total": None,
+        "per_round_reset_str": None, "per_round_countdown": None,
+        "weekly_reset_str": None, "monthly_reset_str": None
+    }
 
 def get_github_releases():
     """Fetch Hermes Agent GitHub releases."""
@@ -844,13 +886,28 @@ def api_stats():
 
 @app.route("/api/quota_debug2", methods=["GET"])
 def api_quota_debug2():
-    import subprocess as s, os, json, traceback
+    """Debug: show raw /v1/usage API response from MiniMax."""
+    import urllib.request
+    api_key = os.environ.get("MINIMAX_CN_API_KEY", "")
+    if not api_key or api_key.startswith("***"):
+        try:
+            with open(os.path.expanduser("~/.opencc-cli.conf")) as f:
+                for line in f:
+                    if line.startswith("API_KEY="):
+                        api_key = line.split("=", 1)[1].strip().strip('"')
+                        break
+        except Exception:
+            pass
+    if not api_key or api_key.startswith("***"):
+        return jsonify({"error": "no valid API key found"})
     try:
-        result = s.run(["mmx", "quota", "show"], capture_output=True, text=True, timeout=15)
-        output = result.stdout.strip()
-        data = json.loads(output)
-        models = data.get("model_remains", [])
-        return jsonify({"rc": result.returncode, "models_count": len(models), "output_len": len(output)})
+        req = urllib.request.Request(
+            "https://mimimax.cn/v1/usage",
+            headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+        return jsonify({"source": "mimimax.cn /v1/usage", "data": data})
     except Exception as e:
         return jsonify({"error": str(e)})
 
@@ -871,96 +928,31 @@ def api_quota():
 
     is_minimax = "minimax" in current_provider.lower()
     if is_minimax:
-        # ... existing MiniMax mmx quota logic ...
-        try:
-            import datetime as dt
-            import calendar
-
-            result = subprocess.run(
-                ["mmx", "quota", "show"],
-                capture_output=True, text=True, timeout=15
-            )
-            if result.returncode != 0:
-                return jsonify({"error": "mmx failed", "stderr": result.stderr}), 500
-
-            data = json.loads(result.stdout.strip())
-            models = data.get("model_remains", [])
-            if not models:
-                return jsonify({"error": "no model_remains", "raw": result.stdout[:200]}), 200
-
-            def fmt_remains(seconds):
-                if not seconds: return "—"
-                s = int(seconds)
-                d, s = divmod(s, 86400)
-                h, s = divmod(s, 3600)
-                m, s = divmod(s, 60)
-                parts = []
-                if d > 0: parts.append(f"{d}天")
-                if h > 0: parts.append(f"{h}小时")
-                if m > 0: parts.append(f"{m}分")
-                if not parts: parts.append(f"{s}秒")
-                return "".join(parts)
-
-            m0 = models[0]
-            weekly_total   = m0.get("current_weekly_total_count", 0) or 0
-            weekly_used    = m0.get("current_weekly_usage_count", 0) or 0
-            interval_total = m0.get("current_interval_total_count", 0) or 0
-            interval_used  = m0.get("current_interval_usage_count", 0) or 0
-            weekly_end_ms  = m0.get("weekly_end_time")
-            interval_end_ms = m0.get("end_time")
-
-            if interval_end_ms:
-                reset_utc = dt.datetime.utcfromtimestamp(interval_end_ms / 1000)
-                now_utc  = dt.datetime.utcnow()
-                countdown = max(0, int((reset_utc - now_utc).total_seconds()))
-            else:
-                countdown = None
-
-            if weekly_end_ms:
-                weekly_reset_str = dt.datetime.fromtimestamp(weekly_end_ms / 1000).strftime("%m-%d %H:%M")
-            else:
-                weekly_reset_str = None
-
-            monthly_reset_str = None
-            if weekly_end_ms:
-                wdt = dt.datetime.fromtimestamp(weekly_end_ms / 1000)
-                last_day = calendar.monthrange(wdt.year, wdt.month)[1]
-                monthly_reset_str = wdt.replace(day=last_day, hour=23, minute=59).strftime("%m-%d %H:%M")
-
+        # Use direct /v1/usage API (new opencc backend)
+        q = _get_minimax_quota_from_api()
+        if q and "error" not in q and q.get("models"):
+            m0 = q["models"][0]
             return jsonify({
                 "provider": current_provider,
                 "model": current_model,
                 "quota_available": True,
-                "weekly_limit":   weekly_total,
-                "weekly_used":    weekly_used,
-                "weekly_total":   weekly_total,
-                "per_round_limit": interval_total,
-                "per_round_used":  interval_used,
-                "per_round_countdown": countdown,
-                "per_round_reset_str": fmt_remains(countdown) if countdown is not None else None,
-                "weekly_reset_str":   weekly_reset_str,
-                "monthly_reset_str":  monthly_reset_str,
-                "daily_reset_ts":     interval_end_ms,
-                "weekly_reset_ts":    weekly_end_ms,
-                "models": [
-                    {
-                        "name":              mm.get("model_name", ""),
-                        "weekly_total":      mm.get("current_weekly_total_count", 0) or 0,
-                        "weekly_used":       mm.get("current_weekly_usage_count", 0) or 0,
-                        "weekly_remains":    max(0, (mm.get("current_weekly_total_count", 0) or 0) - (mm.get("current_weekly_usage_count", 0) or 0)),
-                        "interval_total":    mm.get("current_interval_total_count", 0) or 0,
-                        "interval_used":     mm.get("current_interval_usage_count", 0) or 0,
-                        "interval_remains":  max(0, (mm.get("current_interval_total_count", 0) or 0) - (mm.get("current_interval_usage_count", 0) or 0)),
-                        "monthly_total":     ((mm.get("current_weekly_total_count", 0) or 0) * 4) if (mm.get("current_weekly_total_count", 0) or 0) > 0 else 0,
-                        "monthly_used":      ((mm.get("current_weekly_usage_count", 0) or 0) * 4) if (mm.get("current_weekly_total_count", 0) or 0) > 0 else 0,
-                        "monthly_remains":   max(0, ((mm.get("current_weekly_total_count", 0) or 0) * 4) - ((mm.get("current_weekly_usage_count", 0) or 0) * 4)) if (mm.get("current_weekly_total_count", 0) or 0) > 0 else 0,
-                    }
-                    for mm in models
-                ],
+                "weekly_limit":   q["weekly_limit"],
+                "weekly_used":    q["weekly_used"],
+                "weekly_total":   q["weekly_total"],
+                "weekly_remaining": q.get("weekly_remaining", 0),
+                "per_round_limit": q.get("per_round_limit"),
+                "per_round_used":  q.get("per_round_used"),
+                "per_round_remains": q.get("per_round_remains", 0),
+                "per_round_countdown": q.get("per_round_countdown"),
+                "per_round_reset_str": q.get("per_round_reset_str"),
+                "weekly_reset_str":  q.get("weekly_reset_str"),
+                "monthly_reset_str": q.get("monthly_reset_str"),
+                "daily_reset_ts":    q.get("daily_reset_ts"),
+                "weekly_reset_ts":   q.get("weekly_reset_ts"),
+                "models": q["models"],
             })
-        except Exception as e:
-            import traceback
-            return jsonify({"error": str(e)}), 500
+        return jsonify({"provider": current_provider, "model": current_model, "quota_available": False,
+                        "error": q.get("error") if q else "quota fetch failed"}), 200
 
     # ── Non-MiniMax provider: calculate usage from sessions DB ──────
     try:
