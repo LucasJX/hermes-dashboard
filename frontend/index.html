@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hermes Dashboard</title>
-  <link rel="stylesheet" href="/css/style.css?v=4.3" />
+  <link rel="stylesheet" href="/css/style.css?v=4.4" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦞</text></svg>" />
 </head>
 <body>
@@ -48,20 +48,21 @@
       <span class="dk-icon" aria-hidden="true">📋</span>
       <span class="dk-label">日志</span>
     </div>
-  </div>
 
-  <!-- Right: Theme toggle + Avatar (all standalone, no overflow:hidden wrapper) -->
+  <!-- Right: Theme toggle + Avatar — inside topdock for visual cohesion -->
   <div class="topdock-theme" id="theme-toggle" title="切换主题" role="button" aria-label="切换主题" tabindex="0">
     <span aria-hidden="true">☀️</span>
   </div>
   <div class="topdock-avatar" id="avatar-btn" title="账号管理" role="button" aria-label="账号管理" tabindex="0">
     🦞
   </div>
-  <!-- Floating dropdown menu -->
-  <div class="topdock-dropdown" id="user-dropdown" role="menu" aria-label="用户菜单">
-    <div class="topdock-dropdown-item" id="rc-account" role="menuitem" tabindex="0">账号管理</div>
-    <div class="topdock-dropdown-item topdock-dropdown-danger" id="rc-logout" role="menuitem" tabindex="0">退出</div>
-  </div>
+</div>
+
+<!-- Floating dropdown menu — outside topdock-wrap so it can overflow -->
+<div class="topdock-dropdown" id="user-dropdown" role="menu" aria-label="用户菜单">
+  <div class="topdock-dropdown-item" id="rc-account" role="menuitem" tabindex="0">账号管理</div>
+  <div class="topdock-dropdown-item topdock-dropdown-danger" id="rc-logout" role="menuitem" tabindex="0">退出</div>
+</div>
 </div>
 
 <!-- ─── Login Overlay ───────────────────────────────────────────────── -->

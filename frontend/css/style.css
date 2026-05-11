@@ -134,6 +134,8 @@ ul { list-style: none; }
 }
 [data-theme="dark"] .topdock {
   box-shadow: 0 4px 24px var(--glass-shadow);
+  border-color: transparent;
+  background: var(--glass-1);
 }
 .topdock::before {
   content: '';

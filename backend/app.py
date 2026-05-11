@@ -1225,6 +1225,37 @@ def api_config_model():
     if model:
         cfg["model"]["default"] = model
 
+    # Also persist api_key to auth.json credential_pool so the gateway uses it
+    if api_key:
+        try:
+            auth_path = os.path.join(HERMES_HOME, "auth.json")
+            auth = json.load(open(auth_path))
+            pool = auth.get("credential_pool", {})
+            # Try both with and without custom: prefix
+            for key in [provider, "custom:" + provider]:
+                if key in pool and isinstance(pool[key], list) and len(pool[key]) > 0:
+                    pool[key][0]["access_token"] = api_key
+                    pool[key][0]["last_status"] = None  # force revalidate
+                    break
+            else:
+                # No existing entry — create one
+                pool_key = "custom:" + provider if not provider.startswith("custom:") else provider
+                pool[pool_key] = [{
+                    "id": provider,
+                    "label": provider,
+                    "auth_type": "api_key",
+                    "priority": 0,
+                    "access_token": api_key,
+                    "last_status": None,
+                    "base_url": base_url,
+                    "request_count": 0,
+                }]
+            auth["credential_pool"] = pool
+            with open(auth_path, "w") as f:
+                json.dump(auth, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return jsonify({"error": f"Failed to update auth.json: {e}"}), 500
+
     try:
         import yaml
         with open(config_path, "w") as f:
