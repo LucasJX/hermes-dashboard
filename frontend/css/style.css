@@ -158,6 +158,7 @@ ul { list-style: none; }
   align-items: center;
   gap: 2px;
   padding: 4px 8px;
+  height: 40px;
   background: rgba(255,255,255,0.78);
   backdrop-filter: blur(28px) saturate(200%);
   -webkit-backdrop-filter: blur(28px) saturate(200%);
@@ -174,25 +175,13 @@ ul { list-style: none; }
   box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 1px 4px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.06);
 }
 
-/* ─── Nav Dock (icon + label horizontal) ─────────────────────────────── */
-.topdock {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0;
-  background: transparent;
-  border: none;
-  overflow: visible;
-  position: relative;
-  -webkit-font-smoothing: antialiased;
-}
 
-/* ─── Right Controls Pill (separate floating glass capsule) ─────────────── */
 .topdock-right {
   display: flex;
   align-items: center;
   gap: 4px;
   padding: 4px 8px;
+  height: 40px;
   background: rgba(255,255,255,0.78);
   backdrop-filter: blur(28px) saturate(200%);
   -webkit-backdrop-filter: blur(28px) saturate(200%);
@@ -2188,9 +2177,24 @@ ul { list-style: none; }
   padding: 0 20px;
 }
 .changelog-panel.open {
-  max-height: 2000px;
+  max-height: 500px;
   opacity: 1;
-  padding: 0 20px 20px;
+  padding: 0 20px 16px;
+  overflow: hidden;
+}
+.changelog-panel.open .cl-body {
+  max-height: 400px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.changelog-panel .cl-body::-webkit-scrollbar { width: 4px; }
+.changelog-panel .cl-body::-webkit-scrollbar-track { background: transparent; }
+.changelog-panel .cl-body::-webkit-scrollbar-thumb {
+  background: var(--ink-4);
+  border-radius: 2px;
+}
+.changelog-panel .cl-body::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-3);
 }
 [data-theme="dark"] .changelog-panel {
   background: rgba(30,30,50,0.75);

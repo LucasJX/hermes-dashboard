@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hermes Dashboard</title>
-  <link rel="stylesheet" href="/css/style.css?v=5.4" />
+  <link rel="stylesheet" href="/css/style.css?v=5.5" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦞</text></svg>" />
 </head>
 <body>
@@ -781,7 +781,7 @@ function _renderChangelog(panel, data) {
         <div class="cl-close" onclick="_toggleChangelog()">✕</div>
       </div>
     </div>
-    ${catHTML}`;
+    <div class="cl-body">${catHTML}</div>`;
 
   // ── Typewriter animation: character-by-character reveal ──
   _animateChangelog(panel);
