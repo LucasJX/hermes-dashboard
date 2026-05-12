@@ -128,61 +128,129 @@ ul { list-style: none; }
     var(--bg);
 }
 
-/* ─── TOP DOCK BAR (single row: left nav dock + right controls dock) ─── */
+/* ─── TOP DOCK — Liquid Glass Floating Pills ──────────────────────────── */
+/* Wrapper: positioning layer only, no visual style */
 .topdock-wrap {
   position: fixed;
   top: 0;
-  left: 0;
-  right: 0;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 1000;
   display: flex;
   justify-content: center;
   align-items: center;
-  padding: 8px 16px 0;
+  gap: 12px;
+  padding: 8px 0;
+  width: auto;
+  background: transparent;
+  border: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+  overflow: visible;
+  border-radius: 0;
+}
+/* Wrap is transparent — pills inside have their own glass */
+
+/* ─── Nav Dock Pill (centered liquid glass capsule) ───────────────────── */
+.topdock {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  background: rgba(255,255,255,0.78);
+  backdrop-filter: blur(28px) saturate(200%);
+  -webkit-backdrop-filter: blur(28px) saturate(200%);
+  border: 1px solid rgba(255,255,255,0.65);
+  border-radius: 20px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04), inset 0 1px 0 rgba(255,255,255,0.5);
+  overflow: visible;
+  position: relative;
+  -webkit-font-smoothing: antialiased;
+}
+[data-theme="dark"] .topdock {
+  background: rgba(30,30,50,0.82);
+  border-color: rgba(255,255,255,0.1);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 1px 4px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.06);
 }
 
 /* ─── Nav Dock (icon + label horizontal) ─────────────────────────────── */
 .topdock {
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 5px 8px;
-  background: rgba(255,255,255,0.75);
-  border-radius: 18px;
-  border: 1px solid rgba(255,255,255,0.6);
-  box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+  gap: 2px;
+  padding: 0;
+  background: transparent;
+  border: none;
   overflow: visible;
   position: relative;
   -webkit-font-smoothing: antialiased;
 }
-[data-theme="dark"] .topdock {
-  box-shadow: 0 4px 24px rgba(0,0,0,0.3);
+
+/* ─── Right Controls Pill (separate floating glass capsule) ─────────────── */
+.topdock-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: rgba(255,255,255,0.78);
+  backdrop-filter: blur(28px) saturate(200%);
+  -webkit-backdrop-filter: blur(28px) saturate(200%);
+  border: 1px solid rgba(255,255,255,0.65);
+  border-radius: 16px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.04), inset 0 1px 0 rgba(255,255,255,0.5);
+  overflow: visible;
+  flex-shrink: 0;
+  transition: max-width 0.3s cubic-bezier(0.4, 0, 0.2, 1), gap 0.3s;
+}
+[data-theme="dark"] .topdock-right {
+  background: rgba(30,30,50,0.82);
   border-color: rgba(255,255,255,0.1);
-  background: rgba(30,30,50,0.85);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 1px 4px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.06);
 }
 
+/* Vertical divider between nav and controls */
+/* Divider removed — pills are now separate floating capsules */
+.topdock-divider { display: none; }
 
-/* ─── Dock Item: horizontal (icon left, label right) ───────────────── */
+
+/* ─── Dock Item: horizontal (icon left, label right) ───────────────────── */
 .dk {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
-  border-radius: 10px;
+  gap: 4px;
+  padding: 0 12px;
+  height: 32px;
+  border-radius: 12px;
   cursor: pointer;
-  transition: background var(--transition), color var(--transition);
+  transition: background 0.15s ease, color 0.15s ease;
   flex-shrink: 0;
   color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  outline: none;
+}
+.dk:focus, .dk:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 .dk:hover {
-  background: var(--surface-2);
-  color: var(--ink);
+  background: rgba(0,102,204,0.10);
+  color: var(--ink-1);
 }
 
 .dk.active {
-  background: var(--blue-dim);
+  background: rgba(0,102,204,0.15);
   color: var(--blue);
+  font-weight: 600;
+  box-shadow: 0 1px 4px rgba(0,102,204,0.15);
+}
+
+[data-theme="dark"] .dk:hover {
+  background: rgba(0,102,204,0.18);
+  color: var(--ink-1);
 }
 
 .dk-icon {
@@ -200,29 +268,44 @@ ul { list-style: none; }
   white-space: nowrap;
 }
 
-/* Theme Toggle + Avatar — simple transparent icons ──────────────────── */
+/* ─── Theme Toggle — separate glass circle ──────────────────────────────── */
 .topdock-theme,
 .topdock-avatar {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
   cursor: pointer;
-  color: var(--ink-2);
-  transition: background var(--transition), color var(--transition);
+  color: var(--ink-1);
+  transition: background 0.2s ease, color 0.2s ease, transform 0.15s ease;
   flex-shrink: 0;
   font-size: 16px;
   line-height: 1;
-  background: transparent;
+  background: rgba(255,255,255,0.5);
   border: none;
-  box-shadow: none;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06), inset 0 1px 0 rgba(255,255,255,0.4);
 }
 .topdock-theme:hover,
 .topdock-avatar:hover {
-  background: var(--surface-2);
-  color: var(--ink);
+  background: rgba(0,102,204,0.12);
+  color: var(--ink-1);
+  transform: scale(1.05);
+}
+.topdock-theme:active,
+.topdock-avatar:active {
+  transform: scale(0.95);
+}
+[data-theme="dark"] .topdock-theme:hover,
+[data-theme="dark"] .topdock-avatar:hover {
+  background: rgba(0,102,204,0.20);
+  color: var(--ink-1);
+}
+[data-theme="dark"] .topdock-theme,
+[data-theme="dark"] .topdock-avatar {
+  background: rgba(255,255,255,0.08);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.06);
 }
 
 /* Dropdown Menu ──────────────────────────────────────────────────────── */
@@ -274,32 +357,8 @@ ul { list-style: none; }
   background: rgba(255,59,48,0.15);
 }
 
-/* Right Controls Dock — same height as nav dock ─────────────────── */
-.topdock-right {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 8px;
-  background: rgba(255,255,255,0.75);
-  border-radius: 18px;
-  border: 1px solid rgba(255,255,255,0.6);
-  box-shadow: 0 4px 24px rgba(0,0,0,0.08);
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  overflow: visible;
-  max-width: 88px;
-  flex-shrink: 0;
-}
-[data-theme="dark"] .topdock-right {
-  box-shadow: 0 4px 24px rgba(0,0,0,0.3);
-  background: rgba(30,30,50,0.85);
-  border-color: rgba(255,255,255,0.1);
-}
+/* Right Controls Dock — same height as nav dock, transparent inside unified pill */
 
-.topdock-right.expanded {
-  max-width: 320px;
-  gap: 8px;
-  padding-right: 14px;
-}
 
 .dk-ctrl {
   display: flex;
@@ -450,7 +509,7 @@ ul { list-style: none; }
 /* ─── Page Content ───────────────────────────────────────────────── */
 .page {
   flex: 1;
-  padding: 76px 16px 32px;
+  padding: 72px 16px 32px;
   max-width: 1200px;
   margin: 0 auto;
   width: 100%;
@@ -2888,89 +2947,130 @@ ul { list-style: none; }
 }
 
 /* ═══ Version Banner ═════════════════════════════════════════════════════════ */
+
+/* ─── Version Banner — Apple HIG Hero Strip ════════════════════════════════ */
 .version-banner {
   background: var(--glass-1);
-  backdrop-filter: blur(24px) saturate(160%);
-  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
   border: 1px solid var(--glass-border);
-  border-radius: var(--radius-xl);
-  padding: 14px 20px;
-  margin-bottom: 16px;
+  border-radius: var(--radius-md);
+  box-shadow: 0 2px 16px var(--glass-shadow);
+  padding: 0;
+  margin-bottom: 24px;
   display: flex;
   align-items: center;
-  gap: 16px;
-  box-shadow: 0 4px 20px var(--glass-shadow);
-  position: relative;
   overflow: hidden;
+  position: relative;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
-[data-theme="dark"] .version-banner {
-  box-shadow: 0 4px 20px var(--glass-shadow);
+.version-banner:hover {
+  border-color: var(--blue-light);
+  box-shadow: 0 4px 24px rgba(0,102,204,0.10);
 }
-.version-banner::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 15%; right: 15%;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent);
-  pointer-events: none;
+
+/* Left accent — slim 3px Apple Blue stripe */
+.vb-accent {
+  width: 3px;
+  height: 100%;
+  flex-shrink: 0;
+  background: var(--blue);
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
 }
-[data-theme="dark"] .version-banner::before {
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent);
+
+/* Logo — inline with text, 52px frosted block */
+.vb-logo-block {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  flex-shrink: 0;
+  background: var(--blue-dim);
+  border-radius: 12px;
+  margin: 8px 0 8px 12px;
 }
 .vb-logo {
   font-size: 28px;
-  flex-shrink: 0;
+  line-height: 1;
+  user-select: none;
 }
+
+/* Info section — name + version + status */
 .vb-info {
   flex: 1;
+  padding: 12px 16px;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
 }
 .vb-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-1);
   display: flex;
   align-items: center;
   gap: 8px;
+  letter-spacing: -0.2px;
   line-height: 1.2;
 }
 .vb-version-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
   font-size: 11px;
   font-weight: 600;
   font-family: var(--font-mono);
-  padding: 2px 8px;
-  border-radius: 20px;
-  background: var(--blue-dim);
-  color: var(--blue);
-  letter-spacing: 0.02em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--blue);
+  color: #fff;
+  letter-spacing: 0;
+  line-height: 1.4;
+}
+.vb-sub {
+  font-size: 11px;
+  color: var(--ink-3);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  line-height: 1;
 }
 .vb-latest-badge {
-  background: rgba(52,199,89,0.15);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(52,199,89,0.12);
   color: #34c759;
 }
 .vb-update-badge {
-  background: rgba(255,159,10,0.15);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(255,149,0,0.14);
   color: #ff9f0a;
   animation: vb-pulse 2s ease-in-out infinite;
 }
 @keyframes vb-pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.65; }
+  50% { opacity: 0.72; }
 }
-.vb-sub {
-  font-size: 11px;
-  color: var(--ink-3);
-  margin-top: 2px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
+
+/* Actions — right-aligned minimal pill buttons */
 .vb-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
+  padding: 0 14px 0 0;
   flex-shrink: 0;
 }
 .vb-btn {
@@ -2978,268 +3078,96 @@ ul { list-style: none; }
   align-items: center;
   gap: 5px;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   padding: 6px 14px;
-  border-radius: 20px;
+  border-radius: 999px;
   cursor: pointer;
-  transition: all 0.2s;
-  border: 1px solid var(--border-1);
-  background: transparent;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+  background: rgba(0,0,0,0.04);
   color: var(--ink-2);
+  border: none;
   white-space: nowrap;
+  line-height: 1;
+  letter-spacing: 0;
 }
 .vb-btn:hover {
-  border-color: var(--blue);
-  color: var(--blue);
-  background: var(--blue-dim);
+  background: rgba(0,0,0,0.08);
+  color: var(--ink-1);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+.vb-btn:active {
+  transform: scale(0.96);
+}
+.vb-btn-icon {
+  font-size: 13px;
+  line-height: 1;
 }
 .vb-btn-primary {
   background: var(--blue);
   color: #fff;
-  border-color: var(--blue);
 }
 .vb-btn-primary:hover {
   background: #0055aa;
-  border-color: #0055aa;
   color: #fff;
-}
-.vb-btn-primary:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.vb-btn-icon {
-  font-size: 14px;
+  box-shadow: 0 2px 10px var(--blue-glow);
 }
 
-/* ═══ Changelog Panel ════════════════════════════════════════════════════════ */
-.changelog-panel {
-  background: var(--glass-1);
-  backdrop-filter: blur(24px) saturate(160%);
-  -webkit-backdrop-filter: blur(24px) saturate(160%);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-xl);
-  margin-bottom: 16px;
-  overflow: hidden;
-  box-shadow: 0 4px 20px var(--glass-shadow);
-  position: relative;
-  max-height: 0;
-  opacity: 0;
-  transition: max-height 0.5s cubic-bezier(0.25,0.46,0.45,0.94),
-              opacity 0.4s ease,
-              padding 0.4s ease;
-  padding: 0 22px;
+/* Dark theme */
+[data-theme="dark"] .version-banner {
+  background: var(--glass-2);
+  border-color: var(--glass-border);
+  box-shadow: 0 2px 16px rgba(0,0,0,0.25);
 }
-[data-theme="dark"] .changelog-panel {
-  box-shadow: 0 4px 20px var(--glass-shadow);
+[data-theme="dark"] .version-banner:hover {
+  border-color: rgba(0,102,204,0.4);
+  box-shadow: 0 4px 24px rgba(0,102,204,0.15);
 }
-.changelog-panel::before {
-  content: '';
-  position: absolute;
-  top: 0; left: 15%; right: 15%;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent);
-  pointer-events: none;
+[data-theme="dark"] .vb-logo-block {
+  background: rgba(0,102,204,0.20);
 }
-[data-theme="dark"] .changelog-panel::before {
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent);
+[data-theme="dark"] .vb-title {
+  color: var(--ink-1);
 }
-.changelog-panel.open {
-  max-height: 70vh;
-  opacity: 1;
-  padding: 20px 22px;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-.cl-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
-}
-.cl-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--ink);
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.cl-meta {
-  font-size: 11px;
-  color: var(--ink-3);
-}
-.cl-close {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: var(--ink-3);
-  transition: all 0.15s;
-  font-size: 16px;
-}
-.cl-close:hover {
-  background: var(--surface-2);
-  color: var(--ink);
-}
-.cl-category {
-  margin-bottom: 14px;
-}
-.cl-cat-header {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--ink);
-  margin-bottom: 6px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.cl-cat-count {
-  font-size: 10px;
-  font-weight: 600;
-  padding: 1px 6px;
-  border-radius: 10px;
-  background: var(--blue-dim);
-  color: var(--blue);
-}
-.cl-items {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.cl-item {
-  font-size: 12px;
+[data-theme="dark"] .vb-btn {
+  background: rgba(255,255,255,0.06);
   color: var(--ink-2);
-  padding: 4px 0 4px 12px;
-  border-left: 2px solid var(--border-1);
-  line-height: 1.5;
-  overflow: hidden;
-  position: relative;
 }
-.cl-item .cl-text {
-  display: inline;
+[data-theme="dark"] .vb-btn:hover {
+  background: rgba(255,255,255,0.10);
+  color: var(--ink-1);
 }
-
-/* ═══ Category Cascade Animation ════════════════════════════════════════════ */
-.cl-category {
-  opacity: 0;
-  transform: translateY(24px);
-}
-.cl-category.cl-cat-in {
-  animation: cl-cat-reveal 0.55s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-}
-@keyframes cl-cat-reveal {
-  from { opacity: 0; transform: translateY(24px) scale(0.98); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-/* ═══ Category Header Slide-In ══════════════════════════════════════════════ */
-.cl-cat-header {
-  opacity: 0;
-  transform: translateX(-12px);
-}
-.cl-cat-header.cl-hdr-in {
-  animation: cl-hdr-slide 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-}
-@keyframes cl-hdr-slide {
-  from { opacity: 0; transform: translateX(-12px); }
-  to   { opacity: 1; transform: translateX(0); }
-}
-
-/* ═══ Item Typewriter Reveal (line-by-line + clip-path wipe + fade) ════════ */
-.cl-item {
-  opacity: 0;
-  transform: translateX(-8px);
-  clip-path: inset(0 100% 0 0);
-}
-.cl-item.cl-item-in {
-  animation: cl-typewriter-line 0.5s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-}
-@keyframes cl-typewriter-line {
-  0% {
-    opacity: 0;
-    transform: translateX(-8px);
-    clip-path: inset(0 100% 0 0);
-  }
-  15% {
-    opacity: 1;
-    clip-path: inset(0 95% 0 0);
-  }
-  100% {
-    opacity: 1;
-    transform: translateX(0);
-    clip-path: inset(0 0% 0 0);
-  }
-}
-
-/* ═══ Scan-line glow sweep across each revealed line ════════════════════════ */
-.cl-item.cl-item-in::after {
-  content: '';
-  position: absolute;
-  top: 0; left: 0;
-  width: 40px;
-  height: 100%;
-  background: linear-gradient(90deg, transparent, var(--blue-glow), transparent);
-  opacity: 0;
-  animation: cl-scan-sweep 0.6s ease forwards;
-  pointer-events: none;
-}
-@keyframes cl-scan-sweep {
-  0%   { left: 0;   opacity: 0.7; }
-  100% { left: 100%; opacity: 0; }
-}
-
-/* ═══ Floating Typing Cursor ════════════════════════════════════════════════ */
-.cl-typing-cursor {
-  position: absolute;
-  width: 2px;
-  height: 14px;
+[data-theme="dark"] .vb-btn-primary {
   background: var(--blue);
-  border-radius: 1px;
-  opacity: 0;
-  transition: top 0.15s ease, left 0.15s ease, opacity 0.2s ease;
-  pointer-events: none;
-  z-index: 10;
-  box-shadow: 0 0 6px var(--blue-glow);
-  animation: cl-cursor-pulse 0.7s step-end infinite;
 }
-.cl-typing-cursor.cl-cursor-done {
-  opacity: 0 !important;
-  transition: opacity 0.5s ease;
+[data-theme="dark"] .vb-btn-primary:hover {
+  background: #0077e0;
+  box-shadow: 0 2px 12px rgba(0,102,204,0.5);
 }
-@keyframes cl-cursor-pulse {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.3; }
-}
-/* Loading shimmer for changelog */
-.cl-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 32px;
-  color: var(--ink-3);
-  font-size: 13px;
-  gap: 8px;
-}
-.cl-empty {
-  text-align: center;
-  padding: 24px;
-  color: var(--ink-3);
-  font-size: 13px;
-}
-@media(max-width: 640px) {
+
+
+@media (max-width: 640px) {
   .version-banner {
-    flex-wrap: wrap;
-    padding: 12px 14px;
-    gap: 10px;
+    flex-direction: column;
+  }
+  .vb-accent {
+    width: 100%;
+    height: 3px;
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+  }
+  .vb-logo-block {
+    width: 100%;
+    height: 56px;
+  }
+  .vb-logo {
+    font-size: 28px;
   }
   .vb-actions {
-    width: 100%;
-    justify-content: flex-end;
+    padding: 0 16px 16px;
+    justify-content: center;
   }
   .vb-info {
-    flex-basis: calc(100% - 44px);
+    padding: 12px 16px;
   }
 }
+
+/* ─── Hero grid cards ──────────────────────────────────────────────────── */

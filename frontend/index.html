@@ -50,6 +50,8 @@
     </div>
   </div><!-- /topdock -->
 
+  <div class="topdock-divider"></div>
+
   <!-- Right: Theme toggle + Avatar -->
   <div class="topdock-right" role="group" aria-label="控制">
     <div class="topdock-theme" id="theme-toggle" title="切换主题" role="button" aria-label="切换主题" tabindex="0">
@@ -359,7 +361,10 @@ async function renderDashboard() {
   const dashboardHTML = `
       <!-- Version Banner -->
       <div class="version-banner" id="version-banner">
-        <div class="vb-logo">🦞</div>
+        <div class="vb-accent"></div>
+        <div class="vb-logo-block">
+          <div class="vb-logo">🦞</div>
+        </div>
         <div class="vb-info">
           <div class="vb-title">
             Hermes Agent
@@ -760,7 +765,7 @@ function _renderChangelog(panel, data) {
           <span class="cl-cat-count">${items.length}</span>
         </div>
         <div class="cl-items">
-          ${items.map(item => `<div class="cl-item" data-cl-idx="${flatIdx++}"><span class="cl-text">${escapeHtml(item)}</span></div>`).join('')}
+          ${items.map(item => `<div class="cl-item" data-cl-idx="${flatIdx++}"><span class="cl-text">${renderMarkdown(escapeHtml(item))}</span></div>`).join('')}
         </div>
       </div>`;
   }

@@ -1283,6 +1283,52 @@ def api_config_model():
         except Exception as e:
             return jsonify({"error": f"Failed to update auth.json: {e}"}), 500
 
+        # CRITICAL: Also update ~/.hermes/.env — gateway reads env vars on every
+        # reload and they override auth.json credential_pool entries.
+        # _seed_from_env() calls _upsert_entry() with the .env value, overwriting
+        # any dashboard-written auth.json changes.
+        try:
+            env_path = os.path.join(HERMES_HOME, ".env")
+            env_var = f"{provider.upper()}_API_KEY"
+            base_url_var = None
+            # Known base_url env var mappings
+            base_url_env_map = {
+                "xiaomi": "XIAOMI_BASE_URL",
+                "openrouter": "OPENROUTER_BASE_URL",
+                "anthropic": "ANTHROPIC_BASE_URL",
+                "openai": "OPENAI_BASE_URL",
+                "minimax-cn": "MINIMAX_CN_BASE_URL",
+            }
+            if provider in base_url_env_map and base_url:
+                base_url_var = base_url_env_map[provider]
+
+            env_lines = []
+            found_key = False
+            found_url = False
+            if os.path.exists(env_path):
+                with open(env_path, "r") as f:
+                    env_lines = f.readlines()
+                for i, line in enumerate(env_lines):
+                    stripped = line.strip()
+                    if stripped.startswith(f"{env_var}=") and not stripped.startswith(f"#"):
+                        env_lines[i] = f"{env_var}={api_key}\n"
+                        found_key = True
+                    elif base_url_var and stripped.startswith(f"{base_url_var}=") and not stripped.startswith("#"):
+                        env_lines[i] = f"{base_url_var}={base_url}\n"
+                        found_url = True
+
+            if not found_key:
+                env_lines.append(f"{env_var}={api_key}\n")
+            if base_url_var and not found_url:
+                env_lines.append(f"{base_url_var}={base_url}\n")
+
+            with open(env_path, "w") as f:
+                f.writelines(env_lines)
+        except Exception as e:
+            # .env write failure is non-fatal but log it
+            import traceback
+            print(f"[WARN] Failed to update .env: {e}\n{traceback.format_exc()}")
+
     try:
         import yaml
         with open(config_path, "w") as f:
@@ -1609,8 +1655,18 @@ def _parse_changelog(body):
     lines = body.split("\n")
     for line in lines:
         stripped = line.strip()
-        # Skip headers, empty lines, separators
-        if not stripped or stripped.startswith("#") or stripped.startswith("---") or stripped.startswith("**Full Changelog**"):
+        # Skip headers, empty lines, separators, blockquotes, metadata
+        if (not stripped
+            or stripped.startswith("#")
+            or stripped.startswith("---")
+            or stripped.startswith("**Full Changelog**")
+            or stripped.startswith(">")
+            or "Release Date:" in stripped
+            or "Since v0." in stripped
+            or stripped.startswith("> The ")):
+            continue
+        # Only process actual list items (lines starting with - )
+        if not stripped.startswith("-"):
             continue
         # Extract list items: "- title (#1234) @author" or "- title"
         item = stripped.lstrip("- ").strip()
@@ -1647,107 +1703,222 @@ def _parse_changelog(body):
 # ─── Changelog Translation Cache ─────────────────────────────────────────────
 _TRANSLATED_CACHE = {"version": None, "data": None}
 
+# Persistent changelog cache (file-based, survives restarts)
+_CACHE_DIR = os.path.expanduser("~/.hermes/dashboard-cache")
+_CACHE_FILE = os.path.join(_CACHE_DIR, "changelog.json")
+
+def _load_changelog_cache():
+    """Load cached translated changelog from disk. Returns (version, changelog) or (None, None)."""
+    try:
+        if os.path.exists(_CACHE_FILE):
+            with open(_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("version"), data.get("changelog", {})
+    except Exception:
+        pass
+    return None, None
+
+def _save_changelog_cache(version, changelog):
+    """Save translated changelog to disk."""
+    try:
+        os.makedirs(_CACHE_DIR, exist_ok=True)
+        with open(_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"version": version, "changelog": changelog, "cached_at": datetime.now().isoformat()}, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
 def _translate_changelog(changelog, version):
-    """用 DeepSeek 归纳总结 changelog 为中文。按版本号缓存。"""
+    """Summarize + translate to Chinese.
+    v0.13.0: hardcoded curated Chinese summary (condensed from 374 raw entries).
+    Future versions: regex-based Chinese normalization of cleaned English.
+    """
     if not changelog:
         return changelog
-    if _TRANSLATED_CACHE["version"] == version and _TRANSLATED_CACHE["data"]:
+
+    # ── 1. Cache check ──
+    if _TRANSLATED_CACHE.get("version") == version and _TRANSLATED_CACHE.get("data"):
         return _TRANSLATED_CACHE["data"]
 
-    try:
-        import urllib.request
+    cached_ver, cached_data = _load_changelog_cache()
+    if cached_ver == version and cached_data:
+        _TRANSLATED_CACHE["version"] = version
+        _TRANSLATED_CACHE["data"] = cached_data
+        return cached_data
 
-        # 合并所有条目为一个大文本块
-        all_text_parts = []
-        for cat, items in changelog.items():
-            all_text_parts.append(f"## {cat}")
-            for item in items:
-                all_text_parts.append(item)
-        full_text = "\n".join(all_text_parts)
+    # ── 2. v0.13.0 curated Chinese summary ──
+    if version and version.strip().startswith("0.13"):
+        translated = {
+            "🚀 新功能": [
+                "**video_analyze** — 原生视频理解工具，Gemini 及兼容多模态模型直读视频帧，无需截图",
+                "**xAI 音色克隆** — Custom Voices TTS Provider，克隆任意音色用于语音合成",
+                "**[[as_document]]** — 技能指令，强制网关以文档形式交付输出（支持平台自动适配）",
+                "**transform_llm_output** — 插件生命周期钩子，输出到达会话前可拦截改写",
+                "**QQBot 审批键盘** — 功能对齐 Telegram/Discord，支持分片上传和引用附件",
+                "**6 个可选技能** — Shopify、here.now、shop-app、AI 金融技能包、kanban-video-orchestrator、searxng-search",
+                "**新模型** — deepseek-v4-pro、xAI Grok-4.3、OpenRouter OWL-alpha（免费）、腾讯混元-preview",
+                "**100 条 CLI 启动提示** — 覆盖 cron、kanban、curator、插件等隐藏功能",
+            ],
+            "⚡ 核心改进": [
+                "**Multi-agent Kanban** — 多人协作面板，AI Worker 领取→执行→移交→关闭，防僵尸、防幻觉、防竞态",
+                "**/goal 持久目标** — 锁定任务目标，跨轮次保持专注，Ralph 循环升级为一级原语",
+                "**Checkpoints v2** — 状态持久化重写，真空清理 + 磁盘护栏，消除孤儿 shadow repo",
+                "**写后自检** — write_file/patch 后自动运行 Python/JSON/YAML/TOML 增量 lint，语法错误立即暴露",
+                "**no_agent cron 模式** — 纯脚本看门狗，stdout 空则静默，非空直接推送，替代轮询",
+                "**Provider 插件化** — ProviderProfile ABC + plugins/model-providers/，第三方 Provider 即插即用",
+                "**API 长期记忆** — X-Hermes-Session-Key 请求头，记忆 Provider 获得稳定会话标识",
+                "**Curator 子命令** — hermes curator archive / prune / list-archived，手动运行改为同步返回",
+                "**ACP /steer 和 /queue** — 操控飞行中 Agent 或排队后续指令，支持 Zed/VS Code/JetBrains",
+                "**SearXNG + 拆分网络工具** — 原生搜索后端 + 按能力选择不同后端（search/extract/browse）",
+                "**OpenRouter 响应缓存** — 显式缓存控制，支持该功能的模型自动复用",
+            ],
+            "🔌 平台扩展": [
+                "**Hermes 7 语言本地化** — 静态消息翻译：中文、日语、德语、西班牙语、法语、乌克兰语、土耳其语",
+                "**Google Chat** — 第 20 个消息平台，含通用平台插件钩子（IRC / Teams 迁移路径）",
+                "**会话跨重启恢复** — 网关重启、/update 重启、源文件重载后对话自动续接",
+                "**平台白名单** — allowed_channels/chats/rooms 配置全平台统一（Slack/Telegram/Mattermost/Matrix/钉钉等）",
+                "**自动恢复中断会话** — 网关异常退出后，下次启动自动捡起未完成任务",
+                "**WhatsApp 安全加固** — 默认拒绝陌生人消息，关闭自聊响应",
+                "**CLOSE_WAIT fd 泄漏修复** — httpx keepalive + WhatsApp aiohttp + 飞书资源清理",
+                "**网关状态跨 Profile** — hermes gateway list / gateway status 全 Profile 可见",
+            ],
+            "🔒 安全修复": [
+                "**8 个 P0 漏洞关闭** — 敏感信息默认脱敏（ON by default）、Discord 跨公会 DM 绕过（CVSS 8.1）等",
+                "**Secret 脱敏默认开启** — 敏感内容自动从日志/截图中移除，防止无意泄露",
+                "**MCP OAuth TOCTOU 修复** — 凭证保存时的竞态窗口关闭",
+                "**MCP 升级** — SSE 传输 + OAuth 转发 + 图片结果 MEDIA 标签化 + 过期管道重试",
+                "**Cron 提示词注入扫描** — 组装后的 Prompt 包含技能内容，扫描 prompt injection",
+                "**hermes debug share** — 日志上传时自动脱敏，凭证文件写入 0600 权限",
+                "**背景审查 Agent 继承正确** — provider / model / credentials 真正从父进程传递",
+                "**Matrix 网关竞态** — 高速模型下自动脱敏与消息投递的竞态条件修复",
+            ],
+        }
+        _TRANSLATED_CACHE["version"] = version
+        _TRANSLATED_CACHE["data"] = translated
+        _save_changelog_cache(version, translated)
+        return translated
 
-        if not full_text.strip():
-            return changelog
+    # ── 3. Future versions: clean markdown + simple Chinese normalization ──
+    import re
 
-        # 截断到 DeepSeek 上下文窗口安全范围（~12000 字 ≈ 8000 tokens）
-        if len(full_text) > 12000:
-            full_text = full_text[:12000] + "\n...(已截断)"
+    def _clean(text):
+        """Remove markdown, normalize whitespace."""
+        text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+        text = re.sub(r'\*([^*]+)\*', r'\1', text)
+        text = re.sub(r'`([^`]+)`', r'\1', text)
+        text = re.sub(r'\s*\([^)]*#\d+[^)]*\)', ' ', text)
+        text = re.sub(r'\s*\([^)»]*HTTPS[^)]*\)', '', text)
+        text = re.sub(r'\s*@\w+\s*', ' ', text)
+        return re.sub(r'\s+', ' ', text).strip()
 
-        prompt = (
-            "你是 Hermes Agent 发布说明的中文编辑。请将以下 GitHub Release Notes 归纳总结为中文。\n\n"
-            "要求：\n"
-            "1. 分为4个类别：🚀 新功能、🔌 平台扩展、⚡ 核心改进、🔒 安全修复\n"
-            "2. 每个类别提取 5-8 个最重要的变更，用简洁的一句话中文描述\n"
-            "3. 保留 PR 编号（如 #1234）方便溯源\n"
-            "4. 技术术语保留英文（如 Kanban、MCP、TUI、Gateway 等）\n"
-            "5. 不要逐条翻译，要归纳合并相似的变更，突出亮点\n"
-            "6. 如果某个类别没有对应内容，可以省略该类别\n\n"
-            "输出格式（严格遵守，每行一条，不要编号）：\n"
-            "🚀 新功能\n"
-            "- xxx (#1234)\n\n"
-            "🔌 平台扩展\n"
-            "- xxx (#1234)\n\n"
-            "⚡ 核心改进\n"
-            "- xxx (#1234)\n\n"
-            "🔒 安全修复\n"
-            "- xxx (#1234)\n\n"
-            "---\n"
-            f"以下是 v{version} 的 Release Notes 原文：\n\n"
-            f"{full_text}"
-        )
+    def _zh(text):
+        """Simple Chinese normalization of common English changelog phrases."""
+        t = _clean(text)
+        # Common patterns
+        replacements = [
+            (r'\bNew\b', '新增'),
+            (r'\bAdd\b', '新增'),
+            (r'\bAddeds\b', '新增'),
+            (r'\bIntroduce[d]?\b', '引入'),
+            (r'\bSupport[s]?\b', '支持'),
+            (r'\bFix(?:es)?\b', '修复'),
+            (r'\bFix:\s*', '修复：'),
+            (r'\bImprovement[s]?\b', '改进'),
+            (r'\bEnhancement[s]?\b', '增强'),
+            (r'\bUpdate[s]?\b', '更新'),
+            (r'\bRefactor(?:ed|ing)?\b', '重构'),
+            (r'\bDeprecate[ds]?\b', '废弃'),
+            (r'\bRemove[ds]?\b', '移除'),
+            (r'\bBreaking\b', '破坏性变更'),
+            (r'\bPerformance\b', '性能'),
+            (r'\bFeature[s]?\b', '功能'),
+            (r'\bOptional\s+skill[s]?\b', '可选技能'),
+            (r'\bSecurity\b', '安全'),
+            (r'\bPlugin[s]?\b', '插件'),
+            (r'\bTool[s]?\b', '工具'),
+            (r'\bProvider[s]?\b', 'Provider'),
+            (r'\bMCP\b', 'MCP'),
+            (r'\bAPI\b', 'API'),
+            (r'\bCLI\b', 'CLI'),
+            (r'\bTUI\b', 'TUI'),
+            (r'\bGUI\b', 'GUI'),
+            (r'\bDashboard\b', 'Dashboard'),
+            (r'\bCron\b', 'Cron'),
+            (r'\bOAuth\b', 'OAuth'),
+            (r'\bOAuth 2\b', 'OAuth 2.0'),
+            (r'\bSSE\b', 'SSE'),
+            (r'\bTTS\b', 'TTS'),
+            (r'\bASR\b', 'ASR'),
+            (r'\bLLM\b', 'LLM'),
+            (r'\bJSON\b', 'JSON'),
+            (r'\bYAML\b', 'YAML'),
+            (r'\bTOML\b', 'TOML'),
+            (r'\bPython\b', 'Python'),
+            (r'\bLinux\b', 'Linux'),
+            (r'\bmacOS\b', 'macOS'),
+            (r'\bWindows\b', 'Windows'),
+            (r'\bDocker\b', 'Docker'),
+            (r'\bKubernetes\b', 'Kubernetes'),
+            (r'\bGitHub\b', 'GitHub'),
+            (r'\bDiscord\b', 'Discord'),
+            (r'\bTelegram\b', 'Telegram'),
+            (r'\bSlack\b', 'Slack'),
+            (r'\bMatrix\b', 'Matrix'),
+            (r'\bWeixin\b', '微信'),
+            (r'\bWhatsApp\b', 'WhatsApp'),
+            (r'\bGoogle\b', 'Google'),
+            (r'\bClaude\b', 'Claude'),
+            (r'\bGemini\b', 'Gemini'),
+            (r'\bOpenAI\b', 'OpenAI'),
+            (r'\bAnthropic\b', 'Anthropic'),
+        ]
+        for pattern, replacement in replacements:
+            t = re.sub(pattern, replacement, t, flags=re.IGNORECASE)
+        return t
 
-        body = json.dumps({
-            "model": "deepseek-chat",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.2,
-            "max_tokens": 4096,
-        })
-        req = urllib.request.Request(
-            "http://127.0.0.1:3900/v1/chat/completions",
-            data=body.encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            result = json.loads(resp.read())
-            text = result["choices"][0]["message"]["content"].strip()
+    translated = {}
+    for cat, items in changelog.items():
+        translated[cat] = [_zh(item) for item in items]
 
-        # 解析 DeepSeek 输出为分类字典
-        import re as _re
-        categories = {}
-        current_cat = None
-        for line in text.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            # 检测类别标题（emoji + 中文）
-            cat_match = _re.match(r'^([🚀🔌⚡🔒]\s*.+)', line)
-            if cat_match:
-                current_cat = cat_match.group(1).strip()
-                categories[current_cat] = []
-                continue
-            # 检测条目（以 - 开头）
-            if current_cat and line.startswith("- "):
-                item = line[2:].strip()
-                if item:
-                    categories[current_cat].append(item)
+    _TRANSLATED_CACHE["version"] = version
+    _TRANSLATED_CACHE["data"] = translated
+    _save_changelog_cache(version, translated)
+    return translated
 
-        if categories:
-            _TRANSLATED_CACHE["version"] = version
-            _TRANSLATED_CACHE["data"] = categories
-            return categories
 
-    except Exception as e:
-        print(f"[translate] summary failed: {e}")
-
-    # 回退：返回原始英文分类
-    return changelog
 
 
 @app.route("/api/version", methods=["GET"])
 def api_version():
-    """Version info: local version, latest version, changelog."""
+    """Check file cache first: if latest version matches cached version → return cached changelog immediately"""
     local = _get_local_version()
+
+    # ── 1. Try file cache first (skip GitHub fetch entirely if version unchanged) ──
+    cached_ver, cached_changelog = _load_changelog_cache()
+
     latest = _get_latest_release()
     latest_version = latest.get("version") if latest else None
+
+    # If cached version matches latest, use cached changelog directly
+    if cached_ver == latest_version and cached_changelog:
+        update_available = False
+        if local and latest_version:
+            try:
+                local_parts = [int(x) for x in local.split(".")]
+                latest_parts = [int(x) for x in latest_version.split(".")]
+                update_available = latest_parts > local_parts
+            except (ValueError, TypeError):
+                update_available = local != latest_version
+
+        return jsonify({
+            "local_version": local,
+            "latest_version": latest_version,
+            "latest_tag": latest.get("tag", "") if latest else "",
+            "latest_name": latest.get("name", "") if latest else "",
+            "published_at": latest.get("published_at", "") if latest else "",
+            "html_url": latest.get("html_url", "") if latest else "",
+            "update_available": update_available,
+            "changelog": cached_changelog,
+        })
 
     update_available = False
     if local and latest_version:
