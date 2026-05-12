@@ -630,7 +630,10 @@ def get_providers():
     active = auth.get("active_provider")
     custom_provs = cfg.get("custom_providers", []) or []
     model_cfg = cfg.get("model", {})
-    active_model_provider = model_cfg.get("provider", "")
+    if isinstance(model_cfg, dict):
+        active_model_provider = model_cfg.get("provider", "")
+    else:
+        active_model_provider = ""
 
     # Collect all known provider IDs (with and without custom: prefix) to avoid duplicates
     seen = set()
@@ -921,10 +924,25 @@ def api_quota():
         import yaml
         cfg = yaml.safe_load(open(config_path)) or {}
         model_cfg = cfg.get("model", {})
-        current_provider = model_cfg.get("provider", "")
-        current_model = model_cfg.get("default", "")
+        if isinstance(model_cfg, dict):
+            current_provider = model_cfg.get("provider", "")
+            current_model = model_cfg.get("default", "")
+        else:
+            current_provider = ""
+            current_model = ""
     except Exception:
         pass
+
+    # If no explicit provider in config, check if minimax creds exist in auth.json
+    if not current_provider:
+        try:
+            auth = json.load(open(os.path.join(HERMES_HOME, "auth.json")))
+            pool = auth.get("credential_pool", {}) or {}
+            minimax_keys = [k for k in pool if "minimax" in k.lower()]
+            if minimax_keys:
+                current_provider = minimax_keys[0]
+        except Exception:
+            pass
 
     is_minimax = "minimax" in current_provider.lower()
     if is_minimax:
@@ -934,7 +952,7 @@ def api_quota():
             m0 = q["models"][0]
             return jsonify({
                 "provider": current_provider,
-                "model": current_model,
+                "model": m0.get("name") or current_model or "",
                 "quota_available": True,
                 "weekly_limit":   q["weekly_limit"],
                 "weekly_used":    q["weekly_used"],
@@ -1178,8 +1196,16 @@ def api_config_model_get():
     except Exception:
         cfg = {}
     model_cfg = cfg.get("model", {})
-    provider = model_cfg.get("provider", "")
-    base_url = model_cfg.get("base_url", "")
+    if isinstance(model_cfg, dict):
+        provider = model_cfg.get("provider", "")
+        base_url = model_cfg.get("base_url", "")
+        api_key_val = model_cfg.get("api_key", "")
+        model_name = model_cfg.get("default", "")
+    else:
+        provider = ""
+        base_url = ""
+        api_key_val = ""
+        model_name = str(model_cfg) if model_cfg else ""
 
     # Check custom_providers for a matching provider name
     for cp in cfg.get("custom_providers", []):
@@ -1190,8 +1216,9 @@ def api_config_model_get():
     return jsonify({
         "provider": provider,
         "base_url": base_url,
-        "api_key": "***" if model_cfg.get("api_key", "") else "",
-        "model": model_cfg.get("default", ""),
+        "api_key": "***" if api_key_val else "",
+        "model": model_name,
+        "is_string_config": not bool(provider),
     })
 
 
@@ -1215,8 +1242,8 @@ def api_config_model():
     except Exception as e:
         return jsonify({"error": f"Failed to read config: {e}"}), 500
 
-    if "model" not in cfg:
-        cfg["model"] = {}
+    if "model" not in cfg or not isinstance(cfg["model"], dict):
+        cfg["model"] = {"default": str(cfg["model"]) if cfg.get("model") else ""}
     cfg["model"]["provider"] = provider
     if base_url:
         cfg["model"]["base_url"] = base_url
@@ -1867,9 +1894,15 @@ def api_system():
     try:
         import yaml
         cfg = yaml.safe_load(open(cfg_path))
-        model = cfg.get("model", {}).get("default", "unknown")
-        provider = cfg.get("model", {}).get("provider", "unknown")
-        base_url = cfg.get("model", {}).get("base_url", "unknown")
+        mc = cfg.get("model", {})
+        if isinstance(mc, dict):
+            model = mc.get("default", "unknown")
+            provider = mc.get("provider", "unknown")
+            base_url = mc.get("base_url", "unknown")
+        else:
+            model = str(mc) if mc else "unknown"
+            provider = "unknown"
+            base_url = "unknown"
     except Exception:
         pass
 

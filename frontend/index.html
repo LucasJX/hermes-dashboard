@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hermes Dashboard</title>
-  <link rel="stylesheet" href="/css/style.css?v=4.4" />
+  <link rel="stylesheet" href="/css/style.css?v=5.4" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦞</text></svg>" />
 </head>
 <body>
@@ -12,7 +12,7 @@
 <!-- ─── App Shell (flex column) ──────────────────────────────────────── -->
 <div class="app-shell" role="main" aria-label="Hermes Dashboard">
 
-<!-- ─── Top Dock Bar (nav dock + controls dock, same style) ─────────────── -->
+<!-- ─── Top Dock Bar ─────────────────────────────────────────────────── -->
 <div class="topdock-wrap" role="navigation" aria-label="主导航">
   <!-- Left: Navigation Dock -->
   <div class="topdock" id="topdock" role="menubar" aria-label="导航菜单">
@@ -48,21 +48,57 @@
       <span class="dk-icon" aria-hidden="true">📋</span>
       <span class="dk-label">日志</span>
     </div>
+  </div><!-- /topdock -->
 
-  <!-- Right: Theme toggle + Avatar — inside topdock for visual cohesion -->
-  <div class="topdock-theme" id="theme-toggle" title="切换主题" role="button" aria-label="切换主题" tabindex="0">
-    <span aria-hidden="true">☀️</span>
-  </div>
-  <div class="topdock-avatar" id="avatar-btn" title="账号管理" role="button" aria-label="账号管理" tabindex="0">
-    🦞
-  </div>
-</div>
+  <!-- Right: Theme toggle + Avatar -->
+  <div class="topdock-right" role="group" aria-label="控制">
+    <div class="topdock-theme" id="theme-toggle" title="切换主题" role="button" aria-label="切换主题" tabindex="0">
+      <span aria-hidden="true">☀️</span>
+    </div>
+    <div class="topdock-avatar" id="avatar-btn" title="账号管理" role="button" aria-label="账号管理" tabindex="0">
+      🦞
+    </div>
+  </div><!-- /topdock-right -->
+</div><!-- /topdock-wrap -->
 
-<!-- Floating dropdown menu — outside topdock-wrap so it can overflow -->
+<!-- ─── Mobile Bottom Dock (shown only on small screens) ────────────── -->
+<div class="mobile-dock" id="mobile-dock" role="navigation" aria-label="底部导航">
+  <div class="mdk-item active" data-page="dashboard">
+    <span class="mdk-icon">🏠</span>
+    <span class="mdk-label">主页</span>
+    <span class="mdk-dot"></span>
+  </div>
+  <div class="mdk-item" data-page="sessions">
+    <span class="mdk-icon">💬</span>
+    <span class="mdk-label">会话</span>
+    <span class="mdk-dot"></span>
+  </div>
+  <div class="mdk-item" data-page="tokens">
+    <span class="mdk-icon">📊</span>
+    <span class="mdk-label">配额</span>
+    <span class="mdk-dot"></span>
+  </div>
+  <div class="mdk-item" data-page="channels">
+    <span class="mdk-icon">📡</span>
+    <span class="mdk-label">频道</span>
+    <span class="mdk-dot"></span>
+  </div>
+  <div class="mdk-item" data-page="models">
+    <span class="mdk-icon">🤖</span>
+    <span class="mdk-label">模型</span>
+    <span class="mdk-dot"></span>
+  </div>
+  <div class="mdk-item" data-page="cron">
+    <span class="mdk-icon">⏰</span>
+    <span class="mdk-label">定时</span>
+    <span class="mdk-dot"></span>
+  </div>
+</div><!-- /mobile-dock -->
+
+<!-- Floating dropdown menu -->
 <div class="topdock-dropdown" id="user-dropdown" role="menu" aria-label="用户菜单">
   <div class="topdock-dropdown-item" id="rc-account" role="menuitem" tabindex="0">账号管理</div>
   <div class="topdock-dropdown-item topdock-dropdown-danger" id="rc-logout" role="menuitem" tabindex="0">退出</div>
-</div>
 </div>
 
 <!-- ─── Login Overlay ───────────────────────────────────────────────── -->
@@ -216,6 +252,23 @@ document.querySelector('#topdock').addEventListener('click', e => {
   navigate(item.dataset.page);
 });
 
+/* ─── Mobile Bottom Dock ──────────────────────────────────────────── */
+document.querySelector('#mobile-dock').addEventListener('click', e => {
+  const item = e.target.closest('.mdk-item[data-page]');
+  if (!item) return;
+  $$('.mdk-item').forEach(el => el.classList.remove('active'));
+  item.classList.add('active');
+  navigate(item.dataset.page);
+});
+
+/* Sync mobile dock active state with current page */
+function syncMobileDock(page) {
+  if (!page) page = currentPage || 'dashboard';
+  $$('.mdk-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.page === page);
+  });
+}
+
 function navigate(page) {
   currentPage = page;
   sessionStorage.setItem('hermes-page', page); // persist across refresh on mobile
@@ -225,6 +278,7 @@ function navigate(page) {
     window.location.hash = page;
   }
   window.scrollTo({ top: 0 });
+  syncMobileDock(page);
   switch (page) {
     case 'dashboard': renderDashboard(); break;
     case 'channels':  renderChannels();  break;
@@ -242,7 +296,7 @@ function navigate(page) {
 /* ─── RENDER: Dashboard ───────────────────────────────────────────── */
 
 async function renderDashboard() {
-  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div>加载中…</div>';
+  $('#app').classList.add('app-loading');
   try {
     let [stats, quota] = await Promise.all([api('/stats'), api('/quota')]);
     cache.stats = stats;
@@ -454,11 +508,15 @@ async function renderDashboard() {
         </div>
       </div>`;
     $('#app').innerHTML = dashboardHTML;
+    $('#app').classList.remove('app-loading');
+
+    // ── Determine configured model name (handles both dict and string model config) ──
+    const _cfgModel = quota.model || (quota.models && quota.models[0] && quota.models[0].name) || '';
 
     // ── Non-MiniMax: set model title from quota data ──
-    if (!quotaAvailable && quota.model) {
+    if (!quotaAvailable && _cfgModel) {
       const mt = $('#qb-model-title');
-      if (mt) mt.textContent = quota.model + ' (' + (quota.provider || '') + ')';
+      if (mt) mt.textContent = _cfgModel + ' (' + (quota.provider || '') + ')';
     }
 
     $$('.rc-item[data-src]').forEach(el => {
@@ -467,12 +525,17 @@ async function renderDashboard() {
 
     // ── Quota card: populate first model data ──
     // Auto-detect default model from hermes config
-    const activeModels = (quota.models || []).filter(m => m.interval_total > 0 || m.weekly_total > 0);
-    const modelNames = { 'MiniMax-M*': 'AI 对话', 'music-2.6': '音乐生成', 'music-cover': '音乐封面', 'lyrics_generation': '歌词生成', 'coding-plan-vlm': '代码模型', 'coding-plan-search': '搜索模型' };
-    const modelIcons = { 'MiniMax-M*': '🤖', 'music-2.6': '🎵', 'music-cover': '🎤', 'lyrics_generation': '📝', 'coding-plan-vlm': '💻', 'coding-plan-search': '🔍' };
+    // MiniMax API uses interval_used/weekly_used; other providers may use cost/count/in/out
+    const activeModels = (quota.models || []).filter(m =>
+      (m.cost > 0 || m.count > 0 || (m.in || 0) > 0 || (m.out || 0) > 0 ||
+       (m.interval_used || 0) > 0 || (m.weekly_used || 0) > 0)
+    );
+    const modelNames = { 'MiniMax-M*': 'AI 对话', 'MiniMax-M2.7': 'AI 对话', 'MiniMax-M2': 'AI 对话', 'music-2.6': '音乐生成', 'music-cover': '音乐封面', 'lyrics_generation': '歌词生成', 'coding-plan-vlm': '代码模型', 'coding-plan-search': '搜索模型' };
+    const modelIcons = { 'MiniMax-M*': '🤖', 'MiniMax-M2.7': '🤖', 'MiniMax-M2': '🤖', 'music-2.6': '🎵', 'music-cover': '🎤', 'lyrics_generation': '📝', 'coding-plan-vlm': '💻', 'coding-plan-search': '🔍' };
 
-    // Default model: MiniMax-M* (main chat model)
-    const defaultModel = activeModels.find(m => m.name === 'MiniMax-M*') || activeModels[0];
+    // Default model: MiniMax-M* (main chat model), fallback to first available model
+    const configuredModel = quota.model || (quota.models && quota.models[0] && quota.models[0].name) || '';
+    const defaultModel = activeModels.find(m => m.name === 'MiniMax-M2.7' || m.name === 'MiniMax-M*') || activeModels.find(m => m.name.includes('MiniMax')) || activeModels[0];
 
     if (quotaAvailable) {
       function updateQuotaCard(m) {
@@ -532,6 +595,7 @@ async function renderDashboard() {
     _checkVersion();
 
   } catch (e) {
+    $('#app').classList.remove('app-loading');
     $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">加载失败: ${escapeHtml(e.message)}</div></div>`;
   }
 }
@@ -828,7 +892,7 @@ async function _doUpdate() {
 
 /* ─── RENDER: Channels ───────────────────────────────────────────── */
 async function renderChannels() {
-  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div></div>';
+  $('#app').classList.add('app-loading');
   try {
     const [chData, sessData] = await Promise.all([api('/channels'), api('/sessions?limit=500')]);
     const channels = chData.channels || [];
@@ -970,7 +1034,9 @@ async function renderChannels() {
             </div>`;
         }).join('')}
       </div>`;
+  $('#app').classList.remove('app-loading');
   } catch (e) {
+    $('#app').classList.remove('app-loading');
     $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
   }
 }
@@ -979,12 +1045,14 @@ async function renderChannels() {
 
 /* ─── RENDER: Sessions ────────────────────────────────────────────── */
 async function renderSessions() {
-  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div></div>';
+  $('#app').classList.add('app-loading');
   try {
     const data = await api('/sessions?limit=200');
     cache.sessions = data.sessions || [];
     renderSpPage(cache.sessions);
+    $('#app').classList.remove('app-loading');
   } catch (e) {
+    $('#app').classList.remove('app-loading');
     $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
   }
 }
@@ -1183,7 +1251,7 @@ async function openSpDetail(sessionId, rowEl) {
 
 /* ─── RENDER: Tokens ──────────────────────────────────────────────── */
 async function renderTokens() {
-  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div></div>';
+  $('#app').classList.add('app-loading');
   try {
     const [stats, sessionsData, quota] = await Promise.all([api('/stats'), api('/sessions?limit=200'), api('/quota')]);
     const sessions = sessionsData.sessions || [];
@@ -1259,6 +1327,7 @@ async function renderTokens() {
       const x1 = 40 + 35 * Math.cos(startRad), y1 = 40 + 35 * Math.sin(startRad);
       const x2 = 40 + 35 * Math.cos(endRad), y2 = 40 + 35 * Math.sin(endRad);
       const large = (cumPct - start) > 50 ? 1 : 0;
+    $('#app').classList.remove('app-loading');
       return `<path d="M40,40 L${x1.toFixed(2)},${y1.toFixed(2)} A35,35 0 ${large},1 ${x2.toFixed(2)},${y2.toFixed(2)} Z" fill="${d.color}" />`;
     });
 
@@ -1498,7 +1567,7 @@ async function renderTokens() {
             <col style="width:10%">
             <col style="width:48%">
           </colgroup>
-          <thead><tr style="border-bottom:1px solid var(--border)">
+          <thead><tr style="border-bottom:1px solid var(--border-1)">
             <th style="text-align:left;padding:8px 10px;color:var(--ink-3);font-weight:500;white-space:nowrap">日期</th>
             <th style="text-align:right;padding:8px 10px;color:var(--ink-3);font-weight:500">输入</th>
             <th style="text-align:right;padding:8px 10px;color:var(--ink-3);font-weight:500">输出</th>
@@ -1540,7 +1609,7 @@ async function renderTokens() {
             .map(([m, v]) => `${m}: ${fmtNum(v.in+v.out)}`);
           const modelSummary = topModels.length > 0 ? topModels.join(' · ') : '—';
           const dayCost = dayCostMap[d.day] || d.cost || 0;
-          return `<tr style="border-bottom:1px solid var(--border)">
+          return `<tr style="border-bottom:1px solid var(--border-1)">
             <td style="padding:7px 10px;text-align:left;white-space:nowrap;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis">${d.day}</td>
             <td style="padding:7px 10px;text-align:right;color:var(--ink-2);font-variant-numeric:tabular-nums">${fmtNum(d.in)}</td>
             <td style="padding:7px 10px;text-align:right;color:var(--ink-2);font-variant-numeric:tabular-nums">${fmtNum(d.out)}</td>
@@ -1552,6 +1621,7 @@ async function renderTokens() {
       : '<tr><td colspan="6" style="padding:12px;text-align:center;color:var(--ink-3);font-size:13px">本月暂无数据</td></tr>';
 
   } catch (e) {
+    $('#app').classList.remove('app-loading');
     $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
   }
 }
@@ -1560,12 +1630,14 @@ async function renderTokens() {
 
 /* ─── RENDER: Cron ───────────────────────────────────────────────── */
 async function renderCron() {
-  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div></div>';
+  $('#app').classList.add('app-loading');
   try {
     const data = await api('/cron');
     cache.cron = data.jobs || [];
     renderCronList(cache.cron);
+    $('#app').classList.remove('app-loading');
   } catch (e) {
+    $('#app').classList.remove('app-loading');
     $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
   }
 }
@@ -1639,7 +1711,7 @@ function buildCronCardHTML(j) {
 
 /* ─── RENDER: Models (Liquid Glass Hero + Switch) ────────────────────── */
 async function renderModels() {
-  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div>加载模型列表…</div>';
+  $('#app').classList.add('app-loading');
   try {
     const [provData, modelData, cfgData] = await Promise.all([
       api('/providers'),
@@ -1801,6 +1873,7 @@ async function renderModels() {
     `).join('');
 
     // ─── Assemble page ───
+    $('#app').classList.remove('app-loading');
     $('#app').innerHTML = heroHtml + switchHtml + `
       <div class="card" style="margin-bottom:16px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
@@ -1946,6 +2019,7 @@ async function renderModels() {
     });
 
   } catch (e) {
+    $('#app').classList.remove('app-loading');
     $('#app').innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">' + escapeHtml(e.message) + '</div></div>';
   }
 }
@@ -1953,12 +2027,14 @@ async function renderModels() {
 
 /* ─── RENDER: Skills ─────────────────────────────────────────────── */
 async function renderSkills() {
-  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div></div>';
+  $('#app').classList.add('app-loading');
   try {
     const data = await api('/skills');
     cache.skills = data.skills || [];
     renderSkillsList(cache.skills);
+    $('#app').classList.remove('app-loading');
   } catch (e) {
+    $('#app').classList.remove('app-loading');
     $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
   }
 }
@@ -2181,11 +2257,13 @@ function showSkillDetail(name) {
 
 /* ─── RENDER: Logs ───────────────────────────────────────────────── */
 async function renderLogs() {
-  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div></div>';
+  $('#app').classList.add('app-loading');
   try {
     const data = await api('/logs?action=list');
     renderLogsViewer(data.logs || []);
+    $('#app').classList.remove('app-loading');
   } catch (e) {
+    $('#app').classList.remove('app-loading');
     $('#app').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">${e.message}</div></div>`;
   }
 }
@@ -2375,6 +2453,9 @@ async function handleHash() {
   $$('.dk').forEach(el => el.classList.remove('active'));
   const dk = $(`.dk[data-page="${hash}"]`);
   if (dk) dk.classList.add('active');
+  $$('.mdk-item').forEach(el => el.classList.remove('active'));
+  const mdk = $(`.mdk-item[data-page="${hash}"]`);
+  if (mdk) mdk.classList.add('active');
   const authed = await initAuth();  // wait for auth
   if (!authed) return;
   _authChecked = true;
@@ -2513,7 +2594,7 @@ document.addEventListener('keydown', e => {
 
 /* ─── Account Page ─────────────────────────────────────────────────── */
 async function renderAccount() {
-  $('#app').innerHTML = '<div class="loading"><div class="spinner-lg"></div>加载中…</div>';
+  $('#app').classList.add('app-loading');
   let accounts = [];
   let isAdmin = currentUser && currentUser.is_admin;
 
@@ -2558,6 +2639,7 @@ async function renderAccount() {
         </div>` : ''}
       </div>
     </div>`;
+  $('#app').classList.remove('app-loading');
 
   if (isAdmin) {
     $('#acc-add-btn').onclick = async () => {
