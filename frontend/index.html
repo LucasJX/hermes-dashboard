@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hermes Dashboard</title>
-  <link rel="stylesheet" href="/css/style.css?v=5.5" />
+  <link rel="stylesheet" href="/css/style.css?v=5.7" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦞</text></svg>" />
 </head>
 <body>
@@ -125,7 +125,7 @@
 
 <!-- ─── Main Content ─────────────────────────────────────────────── -->
 <main class="page" id="app">
-  <div class="loading"><div class="spinner-lg"></div>加载中…</div>
+  <div class="loading"><div class="pacman"></div><div class="pacman-dots"><span class="pacman-dot"></span><span class="pacman-dot"></span><span class="pacman-dot"></span></div>加载中…</div>
 </main>
 
 </div><!-- .app-shell -->
@@ -755,8 +755,12 @@ const DASH_CL_KEY = 'hermes_dash_cl';
 const DASH_CL_TTL = 3600 * 1000;
 
 // Hardcoded dashboard changelog — update this when releasing new dashboard versions
-const DASH_CL_VERSION = '2.14.0';
+const DASH_CL_VERSION = '2.15.0';
 const DASH_CL_DATA = [
+  { version: '2.15.0', date: '2026-05-13', changes: [
+    { cat: '🐛 修复', items: ['导航菜单点击白框问题（缺少 .dk:active 伪类，点击时瞬时透明底色）'] },
+    { cat: '🔧 优化', items: ['加载动画重做为像素风吃豆人（clip-path 嘴巴张合 + 延迟食物点动画）', '会话列表等待态 spinner 居中（18px 吃豆人，适配 28px 图标容器）', '加载页遮罩渐入时间从 0.15s 延至 0.3s，更柔和'] },
+  ] },
   { version: '2.14.0', date: '2026-05-12', changes: [
     { cat: '✨ 新功能', items: ['版本卡片重构为双层布局（主信息区 + 操作区）', '头像点击弹出 Dashboard 更新日志浮窗', '状态标签呼吸动画（已是最新）/ 脉冲闪烁（有新版本）', '深色 / 浅色模式完整适配'] },
     { cat: '🔧 优化', items: ['版本号标签字号放大至 14px，蓝色高亮', '按钮居中排列，统一 8px 倍数间距规范', '更新按钮文案优化为「立即更新」', '移动端自适应布局优化'] },
@@ -788,8 +792,18 @@ function _showDashChangelog() {
     for (const cat of entry.changes) {
       catHtml += `
         <div class="dc-cat">
-          <div class="dc-cat-header">${cat.cat} <span class="dc-cat-count">${cat.items.length}</span></div>
-          ${cat.items.map(item => `<div class="dc-item">${item}</div>`).join('')}
+          <div class="dc-cat-header" onclick="this.parentElement.classList.toggle('collapsed')">
+            <span class="cl-cat-arrow">▾</span>
+            ${cat.cat}
+            <span class="dc-cat-count">${cat.items.length}</span>
+          </div>
+          <div class="dc-items">
+            ${cat.items.map(item => {
+              // Highlight feature names in bold
+              const highlighted = item.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+              return `<div class="dc-item">${highlighted}</div>`;
+            }).join('')}
+          </div>
         </div>`;
     }
     html += `
@@ -850,6 +864,9 @@ function _renderChangelog(panel, data) {
 
   const published = data.published_at ? new Date(data.published_at).toLocaleDateString('zh-CN') : '';
 
+  // Keywords that indicate a NEW feature (for badge)
+  const newKeywords = ['新增', 'NEW', 'new', '新增功能', 'First release'];
+
   // Build category HTML — items have data-text attribute for animation
   let catHTML = '';
   let flatIdx = 0;
@@ -858,12 +875,18 @@ function _renderChangelog(panel, data) {
     const catName = cat.split(' ').slice(1).join(' ');
     catHTML += `
       <div class="cl-category">
-        <div class="cl-cat-header">
+        <div class="cl-cat-header" onclick="this.parentElement.classList.toggle('collapsed')">
+          <span class="cl-cat-arrow">▾</span>
           ${catIcon} ${catName}
           <span class="cl-cat-count">${items.length}</span>
         </div>
         <div class="cl-items">
-          ${items.map(item => `<div class="cl-item" data-cl-idx="${flatIdx++}"><span class="cl-text">${renderMarkdown(escapeHtml(item))}</span></div>`).join('')}
+          ${items.map(item => {
+            // Check if item looks like a NEW feature
+            const isNew = newKeywords.some(kw => item.startsWith(kw)) || item.includes('**NEW**');
+            const cleanItem = item.replace(/\*\*NEW\*\*/g, '').trim();
+            return `<div class="cl-item" data-cl-idx="${flatIdx++}"><span class="cl-text">${renderMarkdown(escapeHtml(cleanItem))}</span>${isNew ? '<span class="cl-new-badge">NEW</span>' : ''}</div>`;
+          }).join('')}
         </div>
       </div>`;
   }
@@ -1577,6 +1600,48 @@ async function renderTokens() {
         </div>
       </div>
 
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title-row" style="margin-bottom:14px">
+          <div class="card-title"><span class="card-title-icon">⚡</span>缓存分析</div>
+        </div>
+        <div class="hero-grid" style="grid-template-columns:repeat(4,1fr)">
+          <div class="hero-card">
+            <div class="hero-label">缓存命中率</div>
+            <div class="hero-value" style="color:${(() => {
+              const totalIn = stats.total_input_tokens || 0;
+              const cacheRead = stats.total_cache_read || 0;
+              const rate = totalIn > 0 ? (cacheRead / (cacheRead + totalIn) * 100) : 0;
+              return rate > 70 ? '#34c759' : rate > 40 ? '#ff9f0a' : 'var(--ink)';
+            })()}">${(() => {
+              const totalIn = stats.total_input_tokens || 0;
+              const cacheRead = stats.total_cache_read || 0;
+              return totalIn > 0 ? Math.round(cacheRead / (cacheRead + totalIn) * 100) + '%' : '—';
+            })()}</div>
+            <div class="hero-sub">缓存读取 ${fmtNum(stats.total_cache_read || 0)}</div>
+          </div>
+          <div class="hero-card">
+            <div class="hero-label">缓存写入</div>
+            <div class="hero-value">${fmtNum(stats.total_cache_write || 0)}</div>
+            <div class="hero-sub">首次缓存的 token</div>
+          </div>
+          <div class="hero-card">
+            <div class="hero-label">推理 Token</div>
+            <div class="hero-value">${fmtNum(stats.total_reasoning || 0)}</div>
+            <div class="hero-sub">思维链 token</div>
+          </div>
+          <div class="hero-card">
+            <div class="hero-label">缓存节省</div>
+            <div class="hero-value" style="color:#34c759">${(() => {
+              const cacheRead = stats.total_cache_read || 0;
+              const totalIn = stats.total_input_tokens || 0;
+              const saved = cacheRead > totalIn ? cacheRead - totalIn : 0;
+              return saved > 0 ? fmtNum(saved) : '—';
+            })()}</div>
+            <div class="hero-sub">重复读取的 token</div>
+          </div>
+        </div>
+      </div>
+
       ${defaultModel ? `
       <div class="card" style="margin-bottom:16px">
         <div class="card-title-row" style="margin-bottom:14px">
@@ -1987,6 +2052,37 @@ async function renderModels() {
           <span style="font-size:12px;color:var(--ink-3)">${sortedProvs.length} 个 Provider · ${models.length} 个模型</span>
         </div>
         ${modelGridHtml || '<div style="text-align:center;padding:32px 0;color:var(--ink-3);font-size:13px">暂无可用模型</div>'}
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="color:var(--blue);font-size:12px">◆</span>
+            <span style="font-size:14px;font-weight:600;color:var(--ink)">Provider 管理</span>
+          </div>
+          <button class="btn btn-primary btn-sm" id="pm-add-btn" style="border-radius:9999px;padding:6px 16px;font-size:12px">+ 添加 Provider</button>
+        </div>
+        <div id="pm-list" style="display:flex;flex-direction:column;gap:8px">
+          ${providers.map(p => `
+            <div class="pm-item" data-provider="${escapeHtml(p.id)}" style="display:flex;align-items:center;gap:12px;padding:12px 16px;background:var(--surface-1);border:1px solid var(--border-1);border-radius:var(--radius-md);transition:border-color 0.15s">
+              <div style="width:40px;height:40px;border-radius:10px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0">
+                ${p.is_default ? '⭐' : '🔌'}
+              </div>
+              <div style="flex:1;min-width:0">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span style="font-size:14px;font-weight:600;color:var(--ink)">${escapeHtml(p.name)}</span>
+                  ${p.is_default ? '<span style="font-size:10px;font-weight:600;color:var(--blue);background:var(--blue-dim);padding:1px 6px;border-radius:9999px">默认</span>' : ''}
+                  <span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:9999px;border:1px solid ${p.status === 'active' ? '#34c759' : p.status === 'error' ? '#ff3b30' : 'var(--border-1)'};color:${p.status === 'active' ? '#34c759' : p.status === 'error' ? '#ff3b30' : 'var(--ink-3)'}">${p.status === 'active' ? '在线' : p.status === 'error' ? '错误' : '未知'}</span>
+                </div>
+                <div style="font-size:11px;color:var(--ink-3);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--font-mono)">${escapeHtml(p.base_url || '—')}</div>
+              </div>
+              <div style="display:flex;gap:6px;flex-shrink:0">
+                <button class="btn btn-secondary btn-sm pm-edit" data-id="${escapeHtml(p.id)}" style="padding:4px 10px;font-size:11px;border-radius:9999px">编辑</button>
+                ${!p.is_default ? `<button class="btn btn-danger btn-sm pm-delete" data-id="${escapeHtml(p.id)}" style="padding:4px 10px;font-size:11px;border-radius:9999px">删除</button>` : ''}
+              </div>
+            </div>
+          `).join('')}
+        </div>
       </div>`;
 
     // ─── Event bindings ───
@@ -2082,7 +2178,12 @@ async function renderModels() {
         if (res.error) throw new Error(res.error);
         // Broadcast model change so dashboard/quota can refresh
         window.dispatchEvent(new CustomEvent('model-changed', { detail: { provider: selectedProv, model } }));
-        toast('模型已切换: ' + model, 'success');
+        // Gateway restart notification
+        if (res.gateway_reloaded) {
+          showGatewayRestartToast();
+        } else {
+          toast('模型已切换: ' + model, 'success');
+        }
         // Refresh the page after short delay
         setTimeout(() => renderModels(), 1200);
       } catch (e) {
@@ -2121,10 +2222,209 @@ async function renderModels() {
       });
     });
 
+    // ─── Provider Management: Add / Edit / Delete ───
+    $('#pm-add-btn').addEventListener('click', () => showProviderModal());
+
+    $$('.pm-edit').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const provId = btn.dataset.id;
+        const prov = providers.find(p => p.id === provId);
+        if (prov) showProviderModal(prov);
+      });
+    });
+
+    $$('.pm-delete').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const provId = btn.dataset.id;
+        if (!confirm('确认删除 Provider: ' + provId + '？')) return;
+        try {
+          const res = await fetch(API + '/providers/' + encodeURIComponent(provId), {
+            method: 'DELETE',
+            headers: authHeaders(),
+          }).then(r => r.json());
+          if (res.error) throw new Error(res.error);
+          toast('已删除: ' + provId, 'success');
+          renderModels();
+        } catch (e) {
+          toast('删除失败: ' + e.message, 'error');
+        }
+      });
+    });
+
   } catch (e) {
     $('#app').classList.remove('app-loading');
     $('#app').innerHTML = '<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-text">' + escapeHtml(e.message) + '</div></div>';
   }
+}
+
+// ─── Provider Modal (Add / Edit) ─────────────────────────────────────────
+function showProviderModal(prov) {
+  const isEdit = !!prov;
+  const title = isEdit ? '编辑 Provider' : '添加 Provider';
+  const name = prov?.name || '';
+  const url = prov?.base_url || '';
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:480px">
+      <div class="modal-header">
+        <h2>${title}</h2>
+        <button class="modal-close" id="pm-modal-close">×</button>
+      </div>
+      <div style="padding:20px 24px 24px">
+        <div class="form-group" style="margin-bottom:20px">
+          <div class="form-label" style="margin-bottom:8px">Provider 名称 *</div>
+          <input class="form-input" id="pm-name" type="text" placeholder="例如: openai, anthropic, custom-name" value="${escapeHtml(name)}" ${isEdit ? 'disabled style="opacity:0.6"' : ''} />
+        </div>
+        <div class="form-group" style="margin-bottom:20px">
+          <div class="form-label" style="margin-bottom:8px">Base URL *</div>
+          <input class="form-input" id="pm-url" type="text" placeholder="https://api.example.com/v1" value="${escapeHtml(url)}" />
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <div class="form-label" style="margin-bottom:8px">API Key</div>
+          <input class="form-input" id="pm-key" type="password" placeholder="${isEdit ? '留空不改' : '输入 API Key'}" />
+        </div>
+        <div style="display:flex;gap:10px;margin-top:24px;padding-top:16px;border-top:1px solid var(--border-1)">
+          <button class="btn btn-primary" id="pm-save" style="padding:10px 24px">保存</button>
+          <button class="btn btn-secondary" id="pm-cancel" style="padding:10px 20px">取消</button>
+        </div>
+      </div>
+    </div>`;
+
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add('active'));
+
+  const close = () => { overlay.classList.remove('active'); setTimeout(() => overlay.remove(), 300); };
+  overlay.querySelector('#pm-modal-close').addEventListener('click', close);
+  overlay.querySelector('#pm-cancel').addEventListener('click', close);
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+  overlay.querySelector('#pm-save').addEventListener('click', async () => {
+    const saveBtn = overlay.querySelector('#pm-save');
+    const provName = overlay.querySelector('#pm-name').value.trim();
+    const provUrl = overlay.querySelector('#pm-url').value.trim();
+    const provKey = overlay.querySelector('#pm-key').value.trim();
+
+    if (!provName) return toast('请输入 Provider 名称', 'error');
+    if (!provUrl) return toast('请输入 Base URL', 'error');
+
+    saveBtn.disabled = true;
+    saveBtn.textContent = '保存中…';
+
+    try {
+      let res;
+      if (isEdit) {
+        const body = { base_url: provUrl };
+        if (provKey) body.api_key = provKey;
+        res = await fetch(API + '/providers/' + encodeURIComponent(provName), {
+          method: 'PUT',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify(body),
+        }).then(r => r.json());
+        if (res.error) throw new Error(res.error);
+      } else {
+        res = await fetch(API + '/providers', {
+          method: 'POST',
+          headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ name: provName, base_url: provUrl, api_key: provKey }),
+        }).then(r => r.json());
+        if (res.error) throw new Error(res.error);
+      }
+      close();
+
+      // Gateway restart notification + auto-dismiss
+      if (res.gateway_reloaded) {
+        showGatewayRestartToast();
+      } else {
+        toast(isEdit ? '已更新: ' + provName : '已添加: ' + provName, 'success');
+      }
+      renderModels();
+    } catch (e) {
+      toast('保存失败: ' + e.message, 'error');
+      saveBtn.disabled = false;
+      saveBtn.textContent = '保存';
+    }
+  });
+}
+
+// ─── Gateway Restart Toast (auto-dismiss when gateway is back online) ────
+function showGatewayRestartToast() {
+  // Remove any existing restart toast
+  const old = document.getElementById('gw-restart-toast');
+  if (old) old.remove();
+
+  const el = document.createElement('div');
+  el.id = 'gw-restart-toast';
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px">
+      <div class="spinner" style="width:16px;height:16px;border-width:2px"></div>
+      <span>正在重启 Gateway…</span>
+    </div>
+    <span style="font-size:11px;opacity:0.7">配置已保存，等待生效</span>
+  `;
+  el.style.cssText = `
+    position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+    background:rgba(28,28,48,0.92);backdrop-filter:blur(20px);
+    border:1px solid rgba(0,102,204,0.3);border-radius:14px;
+    padding:14px 24px;color:#fff;font-size:13px;font-weight:500;
+    display:flex;flex-direction:column;gap:6px;align-items:center;
+    box-shadow:0 8px 32px rgba(0,0,0,0.4);z-index:9999;
+    animation:fadeInUp 0.3s ease;
+  `;
+  document.body.appendChild(el);
+
+  // Poll gateway status every 2 seconds
+  let attempts = 0;
+  const maxAttempts = 30; // 60 seconds max
+  const poll = setInterval(async () => {
+    attempts++;
+    try {
+      const stats = await fetch(API + '/stats').then(r => r.json());
+      if (stats && stats.uptime && stats.uptime !== 'unknown') {
+        // Gateway is back online
+        clearInterval(poll);
+        el.innerHTML = `
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="color:#34c759">✓</span>
+            <span>Gateway 已重启完成</span>
+          </div>
+        `;
+        el.style.borderColor = 'rgba(52,199,89,0.4)';
+        setTimeout(() => {
+          el.style.opacity = '0';
+          el.style.transform = 'translateX(-50%) translateY(10px)';
+          el.style.transition = 'opacity 0.3s, transform 0.3s';
+          setTimeout(() => el.remove(), 300);
+        }, 2000);
+      }
+    } catch {}
+    if (attempts >= maxAttempts) {
+      clearInterval(poll);
+      el.innerHTML = `
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="color:#ff9f0a">⚠</span>
+          <span>Gateway 重启超时，请手动检查</span>
+        </div>
+      `;
+      el.style.borderColor = 'rgba(255,159,10,0.4)';
+      setTimeout(() => {
+        el.style.opacity = '0';
+        el.style.transform = 'translateX(-50%) translateY(10px)';
+        el.style.transition = 'opacity 0.3s, transform 0.3s';
+        setTimeout(() => el.remove(), 300);
+      }, 4000);
+    }
+  }, 2000);
+}
+
+// Also update the model switch handler to use the same toast
+function _patchModelSwitchToast() {
+  const origFetch = window.fetch;
+  // Intercept the config/model POST to show gateway restart toast
 }
 
 
