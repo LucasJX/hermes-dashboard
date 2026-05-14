@@ -230,14 +230,38 @@ server {
 
 ## 📝 更新日志
 
-### v2.x
+### v2.15.1 (2026-05-14)
+- Dark mode：修复卡片、TopDock、下拉菜单、手机 Dock 的白色边框，统一改为深色边框
+- 移除全站浏览器 focus outline（白色晕圈）
+- 新增从 `.env` 文件自动识别 API Provider（无需手动配置）
+
+### v2.15.0 (2026-05-14)
+- 修复导航栏 hover 白色方块问题
+- 新增 Pacman 加载动画
+
+### v2.14.0 (2026-05-12)
+- 完整重写 UI，恢复所有 CSS（之前重写丢失的样式全部还原）
+- 液态玻璃 Dock 栏重设计：高度统一 40px、圆角 20px、浮动胶囊风格
+- 版本信息卡片：蓝色渐变侧边条 + 磨砂 Logo + changelog 瀑布式揭露动画
+- 修复 TopDock Dark Mode 边框颜色
+- 主题切换与头像移入 TopDock 容器内
+- 下拉菜单 open class 修复
+- 简化主题/头像图标为纯文本
+- 版本路径修复（hermes → hermes-agent）
+
+### v2.13.x
+- MiniMax → OpenCC 迁移（API 端点变更）
+- Proxy HTTPError 透传修复
+- Session 认证修复
+
+### v2.12.0
 - 液态玻璃 UI 重设计
 - 浮动胶囊 Dock 栏
 - 版本信息卡片（蓝色渐变侧边 + 磨砂圆 logo）
 - 更新日志瀑布式揭露动画
 - 频道状态 + 活跃会话双卡片
-- 自定义细滚动条
-- Focus outline 修复
+- 自定义 4px 细滚动条
+- Focus outline 移除
 
 ### v1.x
 - 初始版本：Dashboard、Channels、Sessions、Models、Skills、Logs
