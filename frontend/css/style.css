@@ -72,7 +72,7 @@
 
   --glass-1:     rgba(255,255,255,0.08);
   --glass-2:     rgba(255,255,255,0.05);
-  --glass-border: rgba(255,255,255,0.12);
+  --glass-border: rgba(13,14,26,0.80);
   --glass-shadow: rgba(0,0,0,0.45);
 
   --surface-1:   rgba(255,255,255,0.08);
@@ -171,8 +171,14 @@ ul { list-style: none; }
 }
 [data-theme="dark"] .topdock {
   background: rgba(30,30,50,0.82);
-  border-color: rgba(255,255,255,0.1);
+  border-color: rgba(13,14,26,0.6);
   box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 1px 4px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.06);
+}
+
+[data-theme="dark"] .topdock-right {
+  background: rgba(30,30,50,0.82);
+  border-color: rgba(13,14,26,0.6);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06);
 }
 
 
@@ -193,12 +199,6 @@ ul { list-style: none; }
   flex-shrink: 0;
   transition: max-width 0.3s cubic-bezier(0.4, 0, 0.2, 1), gap 0.3s;
 }
-[data-theme="dark"] .topdock-right {
-  background: rgba(30,30,50,0.82);
-  border-color: rgba(255,255,255,0.1);
-  box-shadow: 0 4px 24px rgba(0,0,0,0.45), 0 1px 4px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.06);
-}
-
 /* Vertical divider between nav and controls */
 /* Divider removed — pills are now separate floating capsules */
 .topdock-divider { display: none; }
@@ -306,6 +306,14 @@ ul { list-style: none; }
   background: rgba(255,255,255,0.08);
   box-shadow: 0 2px 8px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.06);
 }
+/* Remove browser default focus ring — we use :hover/:active for visual feedback */
+.topdock-theme:focus,
+.topdock-theme:focus-visible,
+.topdock-avatar:focus,
+.topdock-avatar:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
 
 /* Dropdown Menu ──────────────────────────────────────────────────────── */
 .topdock-dropdown {
@@ -345,9 +353,16 @@ ul { list-style: none; }
   background: rgba(255,59,48,0.12);
   color: var(--red);
 }
+/* Remove focus ring from dropdown items — use hover for feedback */
+.topdock-dropdown-item:focus,
+.topdock-dropdown-item:focus-visible {
+  outline: none;
+  background: var(--surface-2);
+  color: var(--ink);
+}
 [data-theme="dark"] .topdock-dropdown {
   background: rgba(30,30,50,0.95);
-  border-color: rgba(255,255,255,0.1);
+  border-color: rgba(13,14,26,0.6);
 }
 [data-theme="dark"] .topdock-dropdown-item:hover {
   background: var(--surface-2);
@@ -433,7 +448,7 @@ ul { list-style: none; }
 
 [data-theme="dark"] .mobile-dock {
   background: rgba(30,30,50,0.9);
-  border-color: rgba(255,255,255,0.12);
+  border-color: rgba(13,14,26,0.6);
   box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.25);
 }
 
@@ -1357,25 +1372,45 @@ ul { list-style: none; }
   z-index: 100;
   animation: fadeInLoading 0.3s ease;
 }
-/* Pac-Man with opening mouth (facing right) */
+/* ─── Pac-Man Loader (full-page overlay) ─────────────────────────── */
+/* Uses inset() with round% to auto-scale across any element size */
 #app.app-loading::before {
   content: '';
   position: fixed;
-  top: 50%; left: 50%;
+  top: 50%; left: calc(50% - 35px);
   width: 40px; height: 40px;
-  margin: -20px 0 0 -20px;
+  margin-top: -20px;
   background: #ffcc00;
   border-radius: 50%;
   z-index: 101;
-  animation: pacMouth 0.3s steps(2) infinite;
+  animation: pacmanEat 0.4s ease-in-out infinite alternate;
 }
-@keyframes pacMouth {
-  0%, 100% { clip-path: circle(50% at 50% 50%); }
-  50%      { clip-path: polygon(100% 0%, 50% 50%, 100% 100%, 0% 100%, 0% 0%); }
+@keyframes pacmanEat {
+  0%   { clip-path: inset(0% 0% 0% 0% round 50%); }
+  100% { clip-path: inset(25% 55% 25% 0% round 50%); }
 }
 
+/* ─── Pac-Man Loader (inline spinner) ─────────────────────────── */
+/* Same inset approach, auto-scales to element dimensions */
+.pacman {
+  width: 24px; height: 24px;
+  background: #ffcc00;
+  border-radius: 50%;
+  animation: pacmanEat 0.4s ease-in-out infinite alternate;
+  flex-shrink: 0;
+}
+
+/* Session spinner also uses same keyframe (14x14 element) */
+.session-spinner::after {
+  content: '';
+  display: block;
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: #ffcc00;
+  animation: pacmanEat 0.4s ease-in-out infinite alternate;
+}
 /* Dots (food) that pac-man eats */
-.pac-dots {
+.pacman-dots {
   position: fixed;
   top: 50%;
   left: calc(50% + 35px);
@@ -1384,9 +1419,9 @@ ul { list-style: none; }
   gap: 10px;
   z-index: 100;
 }
-.pac-dots::before,
-.pac-dots::after,
-.pac-dots span {
+.pacman-dots::before,
+.pacman-dots::after,
+.pacman-dots span {
   content: '';
   display: block;
   width: 6px; height: 6px;
@@ -1394,38 +1429,18 @@ ul { list-style: none; }
   background: #999;
   animation: dotFade 1.2s ease-in-out infinite;
 }
-.pac-dots::before { animation-delay: 0.0s; }
-.pac-dots::after { animation-delay: 0.3s; }
-.pac-dots span { animation-delay: 0.6s; }
+.pacman-dots::before { animation-delay: 0.0s; }
+.pacman-dots::after  { animation-delay: 0.3s; }
+.pacman-dots span    { animation-delay: 0.6s; }
 @keyframes dotFade {
   0%, 100% { opacity: 0.2; transform: scale(0.6); }
-  40%      { opacity: 1; transform: scale(1); }
-  100%     { opacity: 0; transform: scale(0); }
+  40%      { opacity: 1;   transform: scale(1);   }
+  100%     { opacity: 0;   transform: scale(0);   }
 }
 
 @keyframes fadeInLoading { from { opacity: 0; } to { opacity: 1; } }
 
-/* ─── Pac-Man Loader (inline spinner) ─────────────────────────────── */
-/* Pac-Man circle with mouth via clip-path */
-.pacman {
-  width: 24px; height: 24px;
-  background: #ffcc00;
-  border-radius: 50%;
-  position: relative;
-  animation: pacmanChomp 0.4s steps(2) infinite;
-  flex-shrink: 0;
-}
-@keyframes pacmanChomp {
-  0%   { clip-path: polygon(100% 50%, 50% 50%, 100% 100%); }
-  50%  { clip-path: polygon(100% 50%, 50% 50%, 100% 0%);   }
-}
-
 /* Spinner dots */
-.pacman-dots {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
 .pacman-dot {
   width: 6px; height: 6px;
   border-radius: 50%;
@@ -1435,10 +1450,6 @@ ul { list-style: none; }
 .pacman-dot:nth-child(2) { animation-delay: 0.2s; }
 .pacman-dot:nth-child(3) { animation-delay: 0.4s; }
 .pacman-dot:nth-child(4) { animation-delay: 0.6s; }
-@keyframes dotFade {
-  0%, 100% { opacity: 0.3; transform: scale(0.7); }
-  50%      { opacity: 1; transform: scale(1); }
-}
 
 /* ─── Generic Components ────────────────────────────────────────────── */
 .loading {
@@ -2721,13 +2732,14 @@ ul { list-style: none; }
   align-items: center;
   justify-content: center;
 }
+/* Session spinner — uses pacmanEat (same inset approach) */
 .session-spinner::after {
   content: '';
   display: block;
   width: 14px; height: 14px;
   border-radius: 50%;
   background: #ffcc00;
-  animation: pacmanChomp 0.4s steps(2) infinite;
+  animation: pacmanEat 0.4s ease-in-out infinite alternate;
 }
 
 /* ─── Responsive ─────────────────────────────────────────────────────── */
@@ -3160,7 +3172,7 @@ ul { list-style: none; }
 
 /* Dark theme */
 [data-theme="dark"] .version-banner {
-  background: rgba(30,30,50,0.75); border-color: rgba(255,255,255,0.08);
+  background: rgba(30,30,50,0.75); border-color: rgba(13,14,26,0.5);
   box-shadow: 0 4px 24px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.05);
 }
 [data-theme="dark"] .version-banner:hover {

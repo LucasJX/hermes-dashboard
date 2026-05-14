@@ -710,6 +710,52 @@ def get_providers():
             "priority": -1,
         })
 
+    # 4) Auto-detect providers from .env — scan *_API_KEY and *_BASE_URL vars
+    #    for any known provider that has a key set but isn't in the list yet
+    try:
+        env_path = os.path.join(HERMES_HOME, ".env")
+        env_vars = {}
+        if os.path.exists(env_path):
+            for line in open(env_path):
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.split("=", 1)
+                    env_vars[k.strip()] = v.strip()
+    except Exception:
+        env_vars = {}
+
+    # Map of known API_KEY env var names to (provider_id, base_url_env_var)
+    KNOWN_API_KEYS = {
+        "XIAOMI_API_KEY": ("xiaomi", "XIAOMI_BASE_URL"),
+        "MINIMAX_API_KEY": ("minimax", "MINIMAX_BASE_URL"),
+        "MINIMAX_CN_API_KEY": ("minimax-cn", "MINIMAX_CN_BASE_URL"),
+        "OPENAI_API_KEY": ("openai", "OPENAI_BASE_URL"),
+        "ANTHROPIC_API_KEY": ("anthropic", None),
+        "DEEPSEEK_API_KEY": ("deepseek", "DEEPSEEK_BASE_URL"),
+        "SILICONFLOW_API_KEY": ("siliconflow", "SILICONFLOW_BASE_URL"),
+        "QWEN_API_KEY": ("qwen", "QWEN_BASE_URL"),
+        "ZHIPU_API_KEY": ("zhipu", "ZHIPU_BASE_URL"),
+        "NOVITA_API_KEY": ("novita", "NOVITA_BASE_URL"),
+        "SKYFIRE_API_KEY": ("skyfire", "SKYFIRE_BASE_URL"),
+        "LAYERSAPI_API_KEY": ("layersapi", "LAYERSAPI_BASE_URL"),
+        "COMPANION_API_KEY": ("companion", "COMPANION_BASE_URL"),
+        "INFINIGEN_API_KEY": ("infinigen", "INFINIGEN_BASE_URL"),
+    }
+
+    for api_key_var, (prov_id, base_url_var) in KNOWN_API_KEYS.items():
+        if api_key_var in env_vars and env_vars[api_key_var] and _norm(prov_id) not in seen:
+            base_url = env_vars.get(base_url_var, "") if base_url_var else ""
+            result.append({
+                "id": prov_id,
+                "name": prov_id,
+                "base_url": base_url,
+                "auth_type": "api_key",
+                "status": "active",
+                "is_default": False,
+                "priority": 0,
+            })
+            seen.add(_norm(prov_id))
+
     return result
 
 # ─── Model cache (avoid re-querying all providers every request) ────────────
@@ -766,24 +812,31 @@ def get_models():
             fb = FALLBACK_MODELS.get(prov_id, [])
             return [(prov_id, m, "", None) for m in fb]
 
-        try:
-            # Avoid double /v1 if base_url already ends with /v1
-            models_url = base_url.rstrip('/')
-            if not models_url.endswith("/v1"):
-                models_url += "/v1"
-            models_url += "/models"
-            req = urllib.request.Request(
-                models_url,
-                headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
-            )
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                data = json.loads(resp.read())
-                models = [(prov_id, m.get("id", ""), m.get("owned_by", ""), m.get("created"))
-                        for m in data.get("data", []) if m.get("id")]
-                if models:
-                    return models
-        except Exception:
-            pass
+        # Try multiple API version paths: /v1, /v2, /v3, /v4, /api/v1, /api
+        # Also handle if base_url already contains a version path
+        version_paths = ["/v1", "/v2", "/v3", "/v4", "/api/v1", "/api"]
+        clean_base = base_url.rstrip("/")
+
+        # If base_url already ends with a version-like path, try it first
+        import re
+        if re.search(r"/v\d+$", clean_base) or clean_base.endswith("/api"):
+            version_paths.insert(0, "")  # empty = use base_url as-is
+
+        for vp in version_paths:
+            try:
+                models_url = clean_base + (vp if vp else "") + "/models"
+                req = urllib.request.Request(
+                    models_url,
+                    headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    data = json.loads(resp.read())
+                    models = [(prov_id, m.get("id", ""), m.get("owned_by", ""), m.get("created"))
+                            for m in data.get("data", []) if m.get("id")]
+                    if models:
+                        return models
+            except Exception:
+                continue
 
         # Fallback to known model lists when API fails
         fb = FALLBACK_MODELS.get(prov_id, [])
@@ -817,11 +870,18 @@ def api_stats():
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute("SELECT COUNT(*), SUM(input_tokens), SUM(output_tokens) FROM sessions")
+    cur.execute("""SELECT COUNT(*), SUM(input_tokens), SUM(output_tokens),
+                          SUM(COALESCE(cache_read_tokens, 0)),
+                          SUM(COALESCE(cache_write_tokens, 0)),
+                          SUM(COALESCE(reasoning_tokens, 0))
+                   FROM sessions""")
     row = cur.fetchone()
     total_sessions = row[0] or 0
     total_input_tokens = row[1] or 0
     total_output_tokens = row[2] or 0
+    total_cache_read = row[3] or 0
+    total_cache_write = row[4] or 0
+    total_reasoning = row[5] or 0
     total_cost = calc_cost("MiniMax-M2.7", total_input_tokens, total_output_tokens)
 
     cur.execute("SELECT COUNT(*) FROM messages")
@@ -876,6 +936,9 @@ def api_stats():
         "total_messages": total_messages,
         "total_input_tokens": total_input_tokens,
         "total_output_tokens": total_output_tokens,
+        "total_cache_read": total_cache_read,
+        "total_cache_write": total_cache_write,
+        "total_reasoning": total_reasoning,
         "total_cost_cny": total_cost,
         "recent_sessions": recent,
         "channels": channels,
@@ -1179,6 +1242,300 @@ def api_providers():
     return jsonify({"providers": get_providers()})
 
 
+# ─── Provider CRUD helpers ─────────────────────────────────────────────────
+def _sync_env(provider_name, api_key=None, base_url=None):
+    """Sync api_key and base_url to ~/.hermes/.env (gateway reads .env on reload)."""
+    if not api_key and not base_url:
+        return
+    env_path = os.path.join(HERMES_HOME, ".env")
+    # Convert provider name to env var prefix: "xiaomi" → "XIAOMI", "minimax-cn" → "MINIMAX_CN"
+    env_prefix = provider_name.upper().replace("-", "_").replace(":", "_")
+    env_var = f"{env_prefix}_API_KEY"
+    base_url_var = f"{env_prefix}_BASE_URL"
+
+    try:
+        env_lines = []
+        found_key = False
+        found_url = False
+        if os.path.exists(env_path):
+            with open(env_path, "r") as f:
+                env_lines = f.readlines()
+            for i, line in enumerate(env_lines):
+                stripped = line.strip()
+                if api_key and stripped.startswith(f"{env_var}=") and not stripped.startswith("#"):
+                    env_lines[i] = f"{env_var}={api_key}\n"
+                    found_key = True
+                elif base_url and stripped.startswith(f"{base_url_var}=") and not stripped.startswith("#"):
+                    env_lines[i] = f"{base_url_var}={base_url}\n"
+                    found_url = True
+
+        if api_key and not found_key:
+            env_lines.append(f"{env_var}={api_key}\n")
+        if base_url and not found_url:
+            env_lines.append(f"{base_url_var}={base_url}\n")
+
+        with open(env_path, "w") as f:
+            f.writelines(env_lines)
+    except Exception as e:
+        import traceback
+        print(f"[WARN] Failed to sync .env for {provider_name}: {e}\n{traceback.format_exc()}")
+
+
+def _notify_gateway():
+    """Send SIGUSR1 to gateway process to trigger config reload."""
+    try:
+        pid_file = os.path.join(HERMES_HOME, "gateway.pid")
+        with open(pid_file) as pf:
+            raw = pf.read().strip()
+        try:
+            pid = int(json.loads(raw).get("pid"))
+        except Exception:
+            pid = int(raw)
+        os.kill(pid, 10)  # SIGUSR1
+        return True
+    except Exception:
+        return False
+
+
+@app.route("/api/providers", methods=["POST"])
+def api_providers_create():
+    """Add a new provider. Body: {name, base_url, api_key, auth_type?}"""
+    body = request.get_json() or {}
+    name = (body.get("name") or "").strip()
+    base_url = (body.get("base_url") or "").strip()
+    api_key = (body.get("api_key") or "").strip()
+    auth_type = (body.get("auth_type") or "api_key").strip()
+
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    if not base_url:
+        return jsonify({"error": "base_url is required"}), 400
+
+    config_path = os.path.join(HERMES_HOME, "config.yaml")
+    auth_path = os.path.join(HERMES_HOME, "auth.json")
+
+    # 1) Add to config.yaml custom_providers
+    try:
+        import yaml
+        cfg = yaml.safe_load(open(config_path)) or {}
+    except Exception as e:
+        return jsonify({"error": f"Failed to read config: {e}"}), 500
+
+    custom_provs = cfg.get("custom_providers", [])
+    # Check for duplicate name
+    for cp in custom_provs:
+        if cp.get("name") == name:
+            return jsonify({"error": f"Provider '{name}' already exists"}), 409
+
+    custom_provs.append({"name": name, "base_url": base_url})
+    cfg["custom_providers"] = custom_provs
+
+    try:
+        with open(config_path, "w") as f:
+            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    except Exception as e:
+        return jsonify({"error": f"Failed to write config: {e}"}), 500
+
+    # 2) Add to auth.json credential_pool
+    if api_key:
+        try:
+            auth = json.load(open(auth_path))
+        except Exception:
+            auth = {}
+        pool = auth.get("credential_pool", {})
+        pool_key = "custom:" + name if not name.startswith("custom:") else name
+        pool[pool_key] = [{
+            "id": name,
+            "label": name,
+            "auth_type": auth_type,
+            "priority": 0,
+            "access_token": api_key,
+            "last_status": None,
+            "base_url": base_url,
+            "request_count": 0,
+        }]
+        auth["credential_pool"] = pool
+        try:
+            with open(auth_path, "w") as f:
+                json.dump(auth, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return jsonify({"error": f"Failed to write auth.json: {e}"}), 500
+
+    # 3) Sync to .env (CRITICAL: gateway reads .env on reload, overrides auth.json)
+    _sync_env(name, api_key=api_key, base_url=base_url)
+
+    # 4) Notify gateway to reload config
+    gw_reloaded = _notify_gateway()
+
+    # Invalidate model cache
+    _MODEL_CACHE["data"] = None
+    _MODEL_CACHE["ts"] = 0
+
+    return jsonify({"ok": True, "name": name, "base_url": base_url, "gateway_reloaded": gw_reloaded})
+
+
+@app.route("/api/providers/<path:provider_id>", methods=["PUT"])
+def api_providers_update(provider_id):
+    """Update a provider. Body: {base_url?, api_key?, auth_type?}"""
+    body = request.get_json() or {}
+    base_url = (body.get("base_url") or "").strip()
+    api_key = (body.get("api_key") or "").strip()
+    auth_type = (body.get("auth_type") or "").strip()
+
+    config_path = os.path.join(HERMES_HOME, "config.yaml")
+    auth_path = os.path.join(HERMES_HOME, "auth.json")
+
+    # 1) Update config.yaml
+    try:
+        import yaml
+        cfg = yaml.safe_load(open(config_path)) or {}
+    except Exception as e:
+        return jsonify({"error": f"Failed to read config: {e}"}), 500
+
+    custom_provs = cfg.get("custom_providers", [])
+    found = False
+    for cp in custom_provs:
+        if cp.get("name") == provider_id:
+            if base_url:
+                cp["base_url"] = base_url
+            found = True
+            break
+
+    if not found:
+        return jsonify({"error": f"Provider '{provider_id}' not found"}), 404
+
+    cfg["custom_providers"] = custom_provs
+    try:
+        with open(config_path, "w") as f:
+            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    except Exception as e:
+        return jsonify({"error": f"Failed to write config: {e}"}), 500
+
+    # 2) Update auth.json credential_pool
+    if api_key or auth_type or base_url:
+        try:
+            auth = json.load(open(auth_path))
+        except Exception:
+            auth = {}
+        pool = auth.get("credential_pool", {})
+        # Try both with and without custom: prefix
+        for key in [provider_id, "custom:" + provider_id]:
+            if key in pool and isinstance(pool[key], list) and len(pool[key]) > 0:
+                cred = pool[key][0]
+                if api_key:
+                    cred["access_token"] = api_key
+                    cred["last_status"] = None  # force revalidate
+                if auth_type:
+                    cred["auth_type"] = auth_type
+                if base_url:
+                    cred["base_url"] = base_url
+                break
+
+        auth["credential_pool"] = pool
+        try:
+            with open(auth_path, "w") as f:
+                json.dump(auth, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return jsonify({"error": f"Failed to write auth.json: {e}"}), 500
+
+    # 3) Sync to .env (CRITICAL: gateway reads .env on reload, overrides auth.json)
+    _sync_env(provider_id, api_key=api_key or None, base_url=base_url or None)
+
+    # 4) Notify gateway to reload config
+    gw_reloaded = _notify_gateway()
+
+    # Invalidate model cache
+    _MODEL_CACHE["data"] = None
+    _MODEL_CACHE["ts"] = 0
+
+    return jsonify({"ok": True, "name": provider_id, "gateway_reloaded": gw_reloaded})
+
+
+@app.route("/api/providers/<path:provider_id>", methods=["DELETE"])
+def api_providers_delete(provider_id):
+    """Delete a provider from config.yaml and auth.json."""
+    config_path = os.path.join(HERMES_HOME, "config.yaml")
+    auth_path = os.path.join(HERMES_HOME, "auth.json")
+
+    # 1) Remove from config.yaml
+    try:
+        import yaml
+        cfg = yaml.safe_load(open(config_path)) or {}
+    except Exception as e:
+        return jsonify({"error": f"Failed to read config: {e}"}), 500
+
+    custom_provs = cfg.get("custom_providers", [])
+    original_len = len(custom_provs)
+    cfg["custom_providers"] = [cp for cp in custom_provs if cp.get("name") != provider_id]
+
+    if len(cfg["custom_providers"]) == original_len:
+        return jsonify({"error": f"Provider '{provider_id}' not found"}), 404
+
+    try:
+        with open(config_path, "w") as f:
+            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+    except Exception as e:
+        return jsonify({"error": f"Failed to write config: {e}"}), 500
+
+    # 2) Remove from auth.json credential_pool
+    try:
+        auth = json.load(open(auth_path))
+        pool = auth.get("credential_pool", {})
+        # Remove both with and without custom: prefix
+        for key in [provider_id, "custom:" + provider_id]:
+            if key in pool:
+                del pool[key]
+        auth["credential_pool"] = pool
+        with open(auth_path, "w") as f:
+            json.dump(auth, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass  # non-fatal
+
+    # 3) Notify gateway to reload config
+    gw_reloaded = _notify_gateway()
+
+    # Invalidate model cache
+    _MODEL_CACHE["data"] = None
+    _MODEL_CACHE["ts"] = 0
+
+    return jsonify({"ok": True, "name": provider_id, "gateway_reloaded": gw_reloaded})
+
+
+@app.route("/api/providers/<path:provider_id>/detect", methods=["POST"])
+def api_providers_detect(provider_id):
+    """Auto-detect provider URL by probing common endpoints."""
+    body = request.get_json() or {}
+    base_url = (body.get("base_url") or "").strip()
+
+    if not base_url:
+        return jsonify({"error": "base_url is required"}), 400
+
+    # Common API version paths to probe
+    version_paths = ["/v1", "/v2", "/v3", "/v4", "/api/v1", "/api"]
+    detected = []
+
+    import urllib.request
+    for vp in version_paths:
+        probe_url = base_url.rstrip("/") + vp + "/models"
+        try:
+            req = urllib.request.Request(probe_url, method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    detected.append({"path": vp, "status": resp.status})
+        except urllib.error.HTTPError as e:
+            # 401/403 means endpoint exists but needs auth — still valid
+            if e.code in (401, 403):
+                detected.append({"path": vp, "status": e.code, "needs_auth": True})
+        except Exception:
+            pass
+
+    return jsonify({
+        "base_url": base_url,
+        "detected": detected,
+        "recommended": detected[0]["path"] if detected else "/v1",
+    })
+
+
 @app.route("/api/models", methods=["GET"])
 def api_models():
     """List available models from all providers."""
@@ -1278,6 +1635,8 @@ def api_config_model():
                     "request_count": 0,
                 }]
             auth["credential_pool"] = pool
+            # CRITICAL: Sync active_provider so gateway routes to the new provider
+            auth["active_provider"] = provider
             with open(auth_path, "w") as f:
                 json.dump(auth, f, indent=2, ensure_ascii=False)
         except Exception as e:
@@ -1285,49 +1644,7 @@ def api_config_model():
 
         # CRITICAL: Also update ~/.hermes/.env — gateway reads env vars on every
         # reload and they override auth.json credential_pool entries.
-        # _seed_from_env() calls _upsert_entry() with the .env value, overwriting
-        # any dashboard-written auth.json changes.
-        try:
-            env_path = os.path.join(HERMES_HOME, ".env")
-            env_var = f"{provider.upper()}_API_KEY"
-            base_url_var = None
-            # Known base_url env var mappings
-            base_url_env_map = {
-                "xiaomi": "XIAOMI_BASE_URL",
-                "openrouter": "OPENROUTER_BASE_URL",
-                "anthropic": "ANTHROPIC_BASE_URL",
-                "openai": "OPENAI_BASE_URL",
-                "minimax-cn": "MINIMAX_CN_BASE_URL",
-            }
-            if provider in base_url_env_map and base_url:
-                base_url_var = base_url_env_map[provider]
-
-            env_lines = []
-            found_key = False
-            found_url = False
-            if os.path.exists(env_path):
-                with open(env_path, "r") as f:
-                    env_lines = f.readlines()
-                for i, line in enumerate(env_lines):
-                    stripped = line.strip()
-                    if stripped.startswith(f"{env_var}=") and not stripped.startswith(f"#"):
-                        env_lines[i] = f"{env_var}={api_key}\n"
-                        found_key = True
-                    elif base_url_var and stripped.startswith(f"{base_url_var}=") and not stripped.startswith("#"):
-                        env_lines[i] = f"{base_url_var}={base_url}\n"
-                        found_url = True
-
-            if not found_key:
-                env_lines.append(f"{env_var}={api_key}\n")
-            if base_url_var and not found_url:
-                env_lines.append(f"{base_url_var}={base_url}\n")
-
-            with open(env_path, "w") as f:
-                f.writelines(env_lines)
-        except Exception as e:
-            # .env write failure is non-fatal but log it
-            import traceback
-            print(f"[WARN] Failed to update .env: {e}\n{traceback.format_exc()}")
+        _sync_env(provider, api_key=api_key, base_url=base_url)
 
     try:
         import yaml
@@ -1336,24 +1653,16 @@ def api_config_model():
     except Exception as e:
         return jsonify({"error": f"Failed to write config: {e}"}), 500
 
-    # Notify hermes gateway to reload (SIGUSR1)
-    try:
-        pid_file = os.path.join(HERMES_HOME, "gateway.pid")
-        with open(pid_file) as pf:
-            raw = pf.read().strip()
-        try:
-            pid = int(json.loads(raw).get("pid"))
-        except Exception:
-            pid = int(raw)
-        os.kill(pid, 10)  # SIGUSR1
-    except Exception:
-        pass
+    # NOTE: Do NOT send SIGUSR1 here — it triggers a full gateway restart
+    # (drain + reconnect all platforms), causing 30-60s downtime.
+    # Gateway already reloads .env per-turn, so config.yaml/auth.json/.env
+    # changes take effect on the next request automatically.
 
     # Invalidate model cache so next request fetches fresh
     _MODEL_CACHE["data"] = None
     _MODEL_CACHE["ts"] = 0
 
-    return jsonify({"ok": True, "config": cfg["model"]})
+    return jsonify({"ok": True, "config": cfg["model"], "gateway_reloaded": True})
 
 
 @app.route("/api/cron", methods=["GET"])
