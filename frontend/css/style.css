@@ -1083,7 +1083,20 @@ ul { list-style: none; }
   text-overflow: ellipsis;
 }
 
-/* ── Quota trend charts ── */
+/* ── Quota trend chart tooltip — theme-aware ── */
+[data-theme="light"] .qd-tooltip-g {
+  --tip-bg: rgba(26, 26, 46, 0.90);
+  --tip-date: rgba(255,255,255,0.55);
+  --tip-in:   #93c5fd;
+  --tip-out:  #fdba74;
+}
+[data-theme="dark"] .qd-tooltip-g,
+.qd-tooltip-g {
+  --tip-bg: rgba(13, 14, 26, 0.92);
+  --tip-date: rgba(240,242,255,0.55);
+  --tip-in:   #6eb5ff;
+  --tip-out:  #ffb078;
+}
 .qb-trend-row {
   margin-top: 14px;
   padding-top: 12px;

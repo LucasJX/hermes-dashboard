@@ -470,7 +470,7 @@ async function renderDashboard() {
                   </span>
                 </div>
               </div>
-              <svg id="qb-daily-svg" viewBox="0 0 340 130" style="width:100%;height:130px;overflow:visible"></svg>
+              <svg id="qb-daily-svg" class="qd-tooltip-g" viewBox="0 0 340 130" style="width:100%;height:130px;overflow:visible"></svg>
             </div>
           </div>
         </div>
@@ -726,15 +726,14 @@ async function renderDashboard() {
         const hoverLine = `<line id="qd-hover-line" x1="0" y1="${PAD.t}" x2="0" y2="${PAD.t + chartH}"
                                 stroke="var(--ink-3)" stroke-width="1" stroke-dasharray="3,3" opacity="0"/>`;
         const tooltipBox = `
-          <g id="qd-tooltip" opacity="0">
-            <rect id="qd-tip-bg" width="108" height="50" rx="8" ry="8"
-                  fill="var(--ink)" opacity="0.92"/>
+          <g id="qd-tooltip" class="qd-tooltip-g" opacity="0">
+            <rect id="qd-tip-bg" width="108" height="50" rx="8" ry="8" fill="var(--tip-bg)"/>
             <text id="qd-tip-date" x="10" y="16" font-size="9.5"
-                  fill="rgba(255,255,255,0.7)" font-family="var(--font)"></text>
+                  fill="var(--tip-date)" font-family="var(--font)"></text>
             <text id="qd-tip-in" x="10" y="30" font-size="10.5" font-weight="700"
-                  fill="#6eb5ff" font-family="var(--font)"></text>
+                  fill="var(--tip-in)" font-family="var(--font)"></text>
             <text id="qd-tip-out" x="10" y="44" font-size="10.5" font-weight="700"
-                  fill="#ffb078" font-family="var(--font)"></text>
+                  fill="var(--tip-out)" font-family="var(--font)"></text>
           </g>`;
 
         // ── Baseline ─────────────────────────────────────────────────────
