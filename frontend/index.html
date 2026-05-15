@@ -183,6 +183,54 @@ function fmtCost(cny) {
   return '¥' + Number(cny).toFixed(2);
 }
 
+// ── Dual-panel trend tooltip ────────────────────────────────────────────────
+let _trendTipTimer = null;
+function showTrendTip(event, type, data) {
+  clearTimeout(_trendTipTimer);
+  const svg = event.currentTarget;
+  const rect = svg.getBoundingClientRect();
+  const ratioX = rect.width / 560; // viewBox width = 560
+  const mx = event.clientX - rect.left;
+  const idx = Math.round((mx / rect.width) * (data.length - 1));
+  const clamped = Math.max(0, Math.min(idx, data.length - 1));
+  const { d, v } = data[clamped];
+  const color = type === 'in' ? '#0066cc' : '#e07b39';
+  const label = type === 'in' ? '输入' : '输出';
+
+  let tip = document.getElementById('_trend-tip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = '_trend-tip';
+    document.body.appendChild(tip);
+  }
+  tip.style.cssText = `
+    position:fixed;z-index:9999;pointer-events:none;
+    background:var(--surface-1,#1c1c1e);
+    border:1px solid var(--border-1,#3a3a3c);
+    border-radius:8px;padding:6px 10px;
+    font-size:11px;font-family:var(--font,sans-serif);
+    box-shadow:0 4px 12px rgba(0,0,0,.25);
+    white-space:nowrap;opacity:0;transition:opacity .12s;
+    color:var(--ink,#fff);line-height:1.5;
+  `;
+  tip.innerHTML = `<div style="color:var(--ink-3,#8e8e93)">${d}日</div><div><span style="color:${color}">${label}</span> <strong>${fmtNum(v)}</strong></div>`;
+  tip.style.opacity = '1';
+
+  const tw = tip.offsetWidth, th = tip.offsetHeight;
+  let left = event.clientX + 10, top = event.clientY - th - 8;
+  if (left + tw > window.innerWidth - 8) left = event.clientX - tw - 10;
+  if (top < 8) top = event.clientY + 16;
+  tip.style.left = left + 'px';
+  tip.style.top = top + 'px';
+}
+
+function hideTrendTip() {
+  _trendTipTimer = setTimeout(() => {
+    const tip = document.getElementById('_trend-tip');
+    if (tip) { tip.style.opacity = '0'; setTimeout(() => tip.remove(), 150); }
+  }, 80);
+}
+
 function getBarColor(used, limit) {
   if (!limit) return 'bar-green';
   const pct = used / limit * 100;
@@ -990,8 +1038,12 @@ const DASH_CL_KEY = 'hermes_dash_cl';
 const DASH_CL_TTL = 3600 * 1000;
 
 // Hardcoded dashboard changelog — update this when releasing new dashboard versions
-const DASH_CL_VERSION = '2.15.0';
+const DASH_CL_VERSION = '2.16.0';
 const DASH_CL_DATA = [
+  { version: '2.16.0', date: '2026-05-15', changes: [
+    { cat: '🔧 优化', items: ['配额页本月趋势图全新设计：双独立面板（输入/输出各自有独立坐标轴），边到边布局，Y轴3标签（最大/中点/0）+ 虚线网格'] },
+    { cat: '🐛 修复', items: ['趋势图 Tooltip 失效问题（SVG transparent rect 不捕获鼠标事件，改为 addEventListener 绑定）', '缓存分析卡片移动端4列被硬编码样式遮挡'] },
+  ] },
   { version: '2.15.0', date: '2026-05-13', changes: [
     { cat: '🐛 修复', items: ['导航菜单点击白框问题（缺少 .dk:active 伪类，点击时瞬时透明底色）'] },
     { cat: '🔧 优化', items: ['加载动画重做为像素风吃豆人（clip-path 嘴巴张合 + 延迟食物点动画）', '会话列表等待态 spinner 居中（18px 吃豆人，适配 28px 图标容器）', '加载页遮罩渐入时间从 0.15s 延至 0.3s，更柔和'] },
@@ -1706,119 +1758,146 @@ async function renderTokens() {
       monthDays.push({ day: key, dayNum: i, ...(dayMap[key] || { in: 0, out: 0, msgs: 0, cost: 0 }) });
     }
 
-    // ── Trend chart: input + output both shown, with legend ──────────────────
+    // ── Trend chart: dual independent panels (input + output) ────────────────
     const fmtK = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'K' : n;
-    const W = 760, H = 160, PAD_L = 2, PAD_R = 52, PAD_T = 16, PAD_B = 28;
-    const chartW = W - PAD_L - PAD_R, chartH = H - PAD_T - PAD_B;
-    const stepX = chartW / (daysInMonth - 1 || 1);
+    // Minimal margins — chart area fills the SVG edge-to-edge in the viewBox.
+    // The Y-axis label is positioned at PAD_L+cW (right at the chart boundary)
+    // with overflow:visible so it bleeds outside the viewBox without clipping.
+    const VW = 560, VH = 140, PAD_L = 6, PAD_R = 0, PAD_T = 14, PAD_B = 24;
+    const cW = VW - PAD_L - PAD_R, cH = VH - PAD_T - PAD_B;
+    const stepX = cW / (daysInMonth - 1 || 1);
+
+    // Each panel scales independently — no mutual suppression
     const maxIn  = Math.max(1, ...monthDays.filter(d => d.in  > 0).map(d => d.in));
     const maxOut = Math.max(1, ...monthDays.filter(d => d.out > 0).map(d => d.out));
-    const maxVal = Math.max(maxIn, maxOut);
 
-    const buildLine = (getVal) => {
+    // Catmull-Rom smooth path (same cubic bezier technique as main dashboard)
+    const buildSmooth = (vals, maxVal) => {
       if (monthDays.length < 2) return '';
       const pts = monthDays.map((d, i) => ({
         x: PAD_L + i * stepX,
-        y: PAD_T + chartH - (getVal(d) / maxVal) * chartH
+        y: PAD_T + cH - (vals[i] / maxVal) * cH
       }));
       let d = `M${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`;
       for (let i = 0; i < pts.length - 1; i++) {
         const [x1, y1] = [pts[i].x, pts[i].y];
         const [x2, y2] = [pts[i+1].x, pts[i+1].y];
-        const [px0, py0] = i > 0 ? [pts[i-1].x, pts[i-1].y] : [x1, y1];
-        const [px1, py1] = i + 2 < pts.length ? [pts[i+2].x, pts[i+2].y] : [x2, y2];
-        d += ` C${(x1 + (x2 - px0)/6).toFixed(1)},${(y1 + (y2 - py0)/6).toFixed(1)} ${(x2 - (px1 - x1)/6).toFixed(1)},${(y2 - (py1 - y1)/6).toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
+        const [px0] = i > 0 ? [pts[i-1].x] : [x1];
+        const [px1] = i + 2 < pts.length ? [pts[i+2].x] : [x2];
+        d += ` C${(x1 + (x2 - px0)/6).toFixed(1)},${y1.toFixed(1)} ${(x2 - (px1 - x1)/6).toFixed(1)},${y2.toFixed(1)} ${x2.toFixed(1)},${y2.toFixed(1)}`;
       }
       return d;
     };
 
-    const lineIn  = buildLine(d => d.in);
-    const lineOut = buildLine(d => d.out);
-    const areaIn  = lineIn  + ` L${PAD_L + chartW},${PAD_T + chartH} Z`;
-    const areaOut = lineOut + ` L${PAD_L + chartW},${PAD_T + chartH} Z`;
+    const valsIn  = monthDays.map(d => d.in);
+    const valsOut = monthDays.map(d => d.out);
+    const lineIn  = buildSmooth(valsIn,  maxIn);
+    const lineOut = buildSmooth(valsOut, maxOut);
+    const areaIn  = lineIn  + ` L${PAD_L + cW},${PAD_T + cH} L${PAD_L},${PAD_T + cH} Z`;
+    const areaOut = lineOut + ` L${PAD_L + cW},${PAD_T + cH} L${PAD_L},${PAD_T + cH} Z`;
 
-    // Data point markers + labels (theme-aware via var(--ink))
-    const dataPointsIn = monthDays.map((d, i) => {
-      const x = PAD_L + i * stepX;
-      const y = PAD_T + chartH - (d.in / maxVal) * chartH;
-      const showLabel = i === 0 || i === monthDays.length - 1 || (d.dayNum % 5 === 0);
-      const dot = `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.5" fill="#0066cc" opacity="0.9" filter="url(#glowBlue)"/>`;
-      const label = showLabel && d.in > 0
-        ? `<text x="${x.toFixed(1)}" y="${(y - 6).toFixed(1)}" text-anchor="middle" fill="var(--ink)" font-size="9" font-weight="500" font-family="var(--font)">${fmtK(d.in)}</text>`
-        : '';
-      return dot + label;
-    }).join('');
-    const dataPointsOut = monthDays.map((d, i) => {
-      const x = PAD_L + i * stepX;
-      const y = PAD_T + chartH - (d.out / maxVal) * chartH;
-      const showLabel = i === 0 || i === monthDays.length - 1 || (d.dayNum % 5 === 0);
-      const dot = `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2.5" fill="#e07b39" opacity="0.9" filter="url(#glowOrange)"/>`;
-      const label = showLabel && d.out > 0
-        ? `<text x="${x.toFixed(1)}" y="${(y - 6).toFixed(1)}" text-anchor="middle" fill="var(--ink)" font-size="9" font-weight="500" font-family="var(--font)">${fmtK(d.out)}</text>`
-        : '';
-      return dot + label;
-    }).join('');
+    // Glow dots (only at endpoints to avoid visual noise on small panels)
+    const dotIn  = monthDays.length >= 1
+      ? `<circle cx="${PAD_L + 0 * stepX}" cy="${(PAD_T + cH - valsIn[0] / maxIn * cH).toFixed(1)}" r="3" fill="#0066cc" filter="url(#glowBlue2)"/>
+         <circle cx="${PAD_L + (monthDays.length - 1) * stepX}" cy="${(PAD_T + cH - valsIn[monthDays.length - 1] / maxIn * cH).toFixed(1)}" r="3" fill="#0066cc" filter="url(#glowBlue2)"/>`
+      : '';
+    const dotOut = monthDays.length >= 1
+      ? `<circle cx="${PAD_L + 0 * stepX}" cy="${(PAD_T + cH - valsOut[0] / maxOut * cH).toFixed(1)}" r="3" fill="#e07b39" filter="url(#glowOrange2)"/>
+         <circle cx="${PAD_L + (monthDays.length - 1) * stepX}" cy="${(PAD_T + cH - valsOut[monthDays.length - 1] / maxOut * cH).toFixed(1)}" r="3" fill="#e07b39" filter="url(#glowOrange2)"/>`
+      : '';
 
-    const yLabels = [
-      { v: maxVal, y: PAD_T },
-      { v: maxVal * 0.5, y: PAD_T + chartH * 0.5 },
-      { v: 0, y: PAD_T + chartH },
-    ];
-    const yAxis = yLabels.map(({ v, y }) =>
-      `<text x="${W - PAD_R + 4}" y="${(y + 4).toFixed(1)}" class="axis-label" text-anchor="start">${fmtK(v)}</text>`
-    ).join('');
-    const gridLines = yLabels.map(({ y }) =>
-      `<line x1="${PAD_L}" y1="${y.toFixed(1)}" x2="${PAD_L + chartW}" y2="${y.toFixed(1)}" stroke="var(--ink-4)" stroke-width="0.5" stroke-dasharray="3,3"/>`
-    ).join('');
-    const xLabelDays = monthDays.map((d, i) => ({ i, dayNum: d.dayNum }))
-      .filter(({ i, dayNum }) => i === 0 || i === monthDays.length - 1 || (dayNum % 5 === 0));
-    const xAxis = xLabelDays.map(({ i, dayNum }) => {
-      const x = PAD_L + i * stepX;
-      return `<text x="${x.toFixed(1)}" y="${H - 4}" class="axis-label" text-anchor="middle">${dayNum}日</text>`;
-    }).join('');
+    // Y-axis: 3 labels at the chart right boundary (PAD_L+cW = end of chart area)
+    // text-anchor:end so the label's RIGHT edge aligns with the chart boundary
+    const yLabel = (maxVal, color) => {
+      const mid = Math.round(maxVal / 2);
+      const lx = PAD_L + cW; // right at the chart boundary
+      return [
+        `<text x="${lx}" y="${PAD_T + 4}" text-anchor="end" font-size="9" fill="${color}" font-family="var(--font)">${fmtK(maxVal)}</text>`,
+        `<text x="${lx}" y="${PAD_T + cH * 0.5 + 3}" text-anchor="end" font-size="9" fill="var(--ink-3)" font-family="var(--font)">${fmtK(mid)}</text>`,
+        `<text x="${lx}" y="${PAD_T + cH}" text-anchor="end" font-size="9" fill="var(--ink-3)" font-family="var(--font)">0</text>`,
+        `<line x1="${PAD_L}" y1="${(PAD_T + cH * 0.5).toFixed(1)}" x2="${lx}" y2="${(PAD_T + cH * 0.5).toFixed(1)}" stroke="var(--ink-4)" stroke-width="0.5" stroke-dasharray="3,2"/>`,
+        `<line x1="${PAD_L}" y1="${(PAD_T + cH).toFixed(1)}" x2="${lx}" y2="${(PAD_T + cH).toFixed(1)}" stroke="var(--ink-4)" stroke-width="0.5"/>`,
+      ].join('');
+    };
+
+    // X-axis: show ALL days, rotated -45° so they don't overlap
+    const xAxisIn = monthDays.length >= 1
+      ? monthDays.map((d, i) => {
+          const x = PAD_L + i * stepX;
+          const anchor = i === 0 ? 'start' : i === monthDays.length - 1 ? 'end' : 'middle';
+          return `<text x="${x.toFixed(1)}" y="${VH - 2}"
+            text-anchor="${anchor}"
+            font-size="8.5" fill="var(--ink-3)" font-family="var(--font)"
+            transform="rotate(-45,${x.toFixed(1)},${VH - 2})">${d.dayNum}日</text>`;
+        }).join('')
+      : '';
+
+    // Hover interaction: mouse tracking on SVG element (not transparent rect)
+    const dataIn  = JSON.stringify(monthDays.map(d => ({d: d.dayNum, v: d.in})));
+    const dataOut = JSON.stringify(monthDays.map(d => ({d: d.dayNum, v: d.out})));
+
+    // Crosshair line (thin vertical line that follows the mouse)
+    const crosshairLine = (color) =>
+      `<line id="_ch_${color}" x1="-99" y1="${PAD_T}" x2="-99" y2="${PAD_T + cH}" stroke="${color}" stroke-width="0.8" stroke-dasharray="3,2" opacity="0" pointer-events="none"/>`;
+
+    const hoverIn  = crosshairLine('#0066cc');
+    const hoverOut = crosshairLine('#e07b39');
+
+    // Panel header (label + value) — with left padding so text doesn't hug edge
+    const panelHead = (label, color, maxVal) =>
+      `<div style="display:flex;align-items:baseline;gap:6px;margin-bottom:6px;padding-left:4px">
+         <span style="font-size:11px;font-weight:600;color:var(--ink-2)">${label}</span>
+         <span style="font-size:10px;color:var(--ink-3)">${fmtK(maxVal)}</span>
+       </div>`;
 
     const barSection = monthDays.length > 0
-      ? `<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><svg id="trend-svg" viewBox="0 0 ${W} ${H}" style="width:100%;min-width:${W}px;height:${H}px;overflow:visible">
-          <defs>
-            <linearGradient id="areaGradIn" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stop-color="#0066cc" stop-opacity="0.3"/>
-              <stop offset="100%" stop-color="#0066cc" stop-opacity="0.04"/>
-            </linearGradient>
-            <linearGradient id="areaGradOut" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stop-color="#e07b39" stop-opacity="0.3"/>
-              <stop offset="100%" stop-color="#e07b39" stop-opacity="0.04"/>
-            </linearGradient>
-            <filter id="glowBlue" x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"/>
-              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-            </filter>
-            <filter id="glowOrange" x="-20%" y="-20%" width="140%" height="140%">
-              <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"/>
-              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-            </filter>
-          </defs>
-          ${gridLines}
-          <path d="${areaIn}"  fill="url(#areaGradIn)" />
-          <path d="${areaOut}" fill="url(#areaGradOut)" />
-          <path d="${lineIn}"  fill="none" stroke="#0066cc" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" filter="url(#glowBlue)"/>
-          <path d="${lineOut}" fill="none" stroke="#e07b39" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" filter="url(#glowOrange)"/>
-          ${dataPointsIn}
-          ${dataPointsOut}
-          ${yAxis}
-          ${xAxis}
-        </svg></div>`
-      : '<div class="text-muted text-sm">本月暂无数据</div>';
+      ? `<div style="display:flex;flex-direction:column;gap:12px">
+          <!-- Input Token panel -->
+          <div>
+            ${panelHead('输入 Token', '#0066cc', maxIn, '')}
+            <svg id="_chartIn" data-chart='${dataIn}' viewBox="0 0 ${VW} ${VH}" style="width:100%;overflow:visible">
+              <defs>
+                <linearGradient id="areaGradIn2" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#0066cc" stop-opacity="0.25"/>
+                  <stop offset="100%" stop-color="#0066cc" stop-opacity="0.03"/>
+                </linearGradient>
+                <linearGradient id="areaGradOut2" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#e07b39" stop-opacity="0.25"/>
+                  <stop offset="100%" stop-color="#e07b39" stop-opacity="0.03"/>
+                </linearGradient>
+                <filter id="glowBlue2" x="-40%" y="-40%" width="180%" height="180%">
+                  <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur"/>
+                  <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+                <filter id="glowOrange2" x="-40%" y="-40%" width="180%" height="180%">
+                  <feGaussianBlur in="SourceGraphic" stdDeviation="2.5" result="blur"/>
+                  <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+              </defs>
+              <path d="${areaIn}" fill="url(#areaGradIn2)"/>
+              <path d="${lineIn}" fill="none" stroke="#0066cc" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" filter="url(#glowBlue2)"/>
+              ${dotIn}
+              ${yLabel(maxIn, '#0066cc')}
+              ${xAxisIn}
+              ${hoverIn}
+            </svg>
+          </div>
+          <!-- Output Token panel -->
+          <div>
+            ${panelHead('输出 Token', '#e07b39', maxOut, '')}
+            <svg id="_chartOut" data-chart='${dataOut}' viewBox="0 0 ${VW} ${VH}" style="width:100%;overflow:visible">
+              <path d="${areaOut}" fill="url(#areaGradOut2)"/>
+              <path d="${lineOut}" fill="none" stroke="#e07b39" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" filter="url(#glowOrange2)"/>
+              ${dotOut}
+              ${yLabel(maxOut, '#e07b39')}
+              ${xAxisIn}
+              ${hoverOut}
+            </svg>
+          </div>
+        </div>`
+      : '<div style="text-align:center;padding:16px 0;color:var(--ink-3);font-size:13px">本月暂无数据</div>';
 
-    const barLegend = monthDays.length > 0
-      ? `<div style="display:flex;gap:16px;margin-top:6px;padding:0 2px">
-           <span style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-3)">
-             <svg width="20" height="2"><line x1="0" y1="1" x2="20" y2="1" stroke="#0066cc" stroke-width="2"/></svg>输入 Token
-           </span>
-           <span style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--ink-3)">
-             <svg width="20" height="2"><line x1="0" y1="1" x2="20" y2="1" stroke="#e07b39" stroke-width="2"/></svg>输出 Token
-           </span>
-         </div>`
-      : '';
+    const barLegend = '';
 
 
     $('#app').innerHTML = `
@@ -1839,7 +1918,7 @@ async function renderTokens() {
         <div class="card-title-row" style="margin-bottom:14px">
           <div class="card-title"><span class="card-title-icon">⚡</span>缓存分析</div>
         </div>
-        <div class="hero-grid" style="grid-template-columns:repeat(4,1fr)">
+        <div class="hero-grid">
           <div class="hero-card">
             <div class="hero-label">缓存命中率</div>
             <div class="hero-value" style="color:${(() => {
@@ -1901,19 +1980,13 @@ async function renderTokens() {
       </div>
       ` : ''}
 
-      <div class="card" style="margin-bottom:16px;padding:14px 0">
-        <div class="card-title-row" style="margin-bottom:14px;padding:0 22px">
+      <div class="card" style="margin-bottom:16px;padding:14px 22px">
+        <div class="card-title-row" style="margin-bottom:14px">
           <div class="card-title"><span class="card-title-icon">◆</span>本月趋势</div>
           <span style="font-size:12px;color:var(--ink-3)">每日 Token</span>
         </div>
         ${barSection}
         ${barLegend}
-        <div style="display:flex;justify-content:space-between;padding:4px 22px 0">
-          ${(() => {
-            const lastDay = new Date().getDate();
-            return `<span style="font-size:11px;color:var(--ink-3)">1日</span><span style="font-size:11px;color:var(--ink-3)">${lastDay}日</span>`;
-          })()}
-        </div>
       </div>
 
       <div class="card-row-2col" style="margin-bottom:16px">
@@ -1982,6 +2055,68 @@ async function renderTokens() {
         </table>
         </div>
       </div>`;
+
+    // ── Bind trend chart hover events (called after innerHTML is set) ──────────
+    function setupTrendCharts() {
+      const fmtK = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'K' : n;
+      const VW = 560, PAD_L = 6, PAD_R = 0, PAD_T = 14, PAD_B = 24;
+      const cW = VW - PAD_L - PAD_R; // 554
+      const cH = 140 - PAD_T - PAD_B; // 102
+
+      [{id: '_chartIn', color: '#0066cc', label: '输入'}, {id: '_chartOut', color: '#e07b39', label: '输出'}].forEach(({id, color, label}) => {
+        const svg = document.getElementById(id);
+        if (!svg) return;
+        const data = JSON.parse(svg.getAttribute('data-chart') || '[]');
+
+        svg.addEventListener('mousemove', function(e) {
+          const rect = svg.getBoundingClientRect();
+          const mx = e.clientX - rect.left;
+          // Map mouse X → data index (accounting for PAD_L and chart width)
+          const chartX = (mx / rect.width) * VW - PAD_L;
+          const idx = Math.round(chartX / cW * (data.length - 1));
+          const ci = Math.max(0, Math.min(idx, data.length - 1));
+          const item = data[ci];
+
+          // Update crosshair line
+          const ch = document.getElementById('_ch_' + color.replace('#', '\\#'));
+          if (ch) {
+            const cx = (PAD_L + ci / (data.length - 1) * cW).toFixed(1);
+            ch.setAttribute('x1', cx);
+            ch.setAttribute('x2', cx);
+            ch.setAttribute('opacity', '0.7');
+          }
+
+          // Show tooltip
+          let tip = document.getElementById('_trend-tip');
+          if (!tip) {
+            tip = document.createElement('div');
+            tip.id = '_trend-tip';
+            document.body.appendChild(tip);
+          }
+          tip.style.cssText = 'position:fixed;z-index:9999;pointer-events:none;background:var(--surface-1,#1c1c1e);border:1px solid var(--border-1,#3a3a3c);border-radius:8px;padding:6px 10px;font-size:11px;font-family:var(--font,sans-serif);box-shadow:0 4px 12px rgba(0,0,0,.25);white-space:nowrap;opacity:0;transition:opacity .12s;color:var(--ink,#fff);line-height:1.5;';
+          tip.innerHTML = `<div style="color:var(--ink-3,#8e8e93)">${item.d}日</div><div><span style="color:${color}">${label}</span> <strong>${fmtK(item.v)}</strong></div>`;
+          tip.style.opacity = '1';
+          const tw = tip.offsetWidth, th = tip.offsetHeight;
+          let l = e.clientX + 10, t = e.clientY - th - 8;
+          if (l + tw > window.innerWidth - 8) l = e.clientX - tw - 10;
+          if (l < 8) l = 8;
+          if (t < 8) t = e.clientY + 16;
+          tip.style.left = l + 'px';
+          tip.style.top = t + 'px';
+        });
+
+        svg.addEventListener('mouseleave', function() {
+          const ch = document.getElementById('_ch_' + color.replace('#', '\\#'));
+          if (ch) ch.setAttribute('opacity', '0');
+          const tip = document.getElementById('_trend-tip');
+          if (tip) {
+            tip.style.opacity = '0';
+            setTimeout(() => { if (tip.parentNode) tip.parentNode.removeChild(tip); }, 150);
+          }
+        });
+      });
+    }
+    setupTrendCharts();
 
     // Daily table — group by model per day
     const dayModelMap = {};
