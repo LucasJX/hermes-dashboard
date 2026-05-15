@@ -141,7 +141,7 @@ def validate_token(token):
 
 # ─── Bearer-token auth guard (replaces cookie session) ────────────────────────
 PUBLIC_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/auth/session",
-                "/health", "/api/stats", "/api/quota", "/api/version/inject", "/api/version", "/api/releases"}
+                "/health", "/api/stats", "/api/quota", "/api/quota/history", "/api/version/inject", "/api/version", "/api/releases"}
 
 @app.before_request
 def require_auth():
@@ -976,6 +976,44 @@ def api_quota_debug2():
         return jsonify({"source": "mimimax.cn /v1/usage", "data": data})
     except Exception as e:
         return jsonify({"error": str(e)})
+
+@app.route("/api/quota/history", methods=["GET"])
+def api_quota_history():
+    """Daily token usage history for quota card trend charts."""
+    days = int(request.args.get("days", 14))
+    conn = get_db()
+    cur = conn.cursor()
+
+    # Aggregate daily token usage from sessions
+    # started_at is Unix timestamp (float seconds)
+    cur.execute(f"""
+        SELECT
+            date(started_at, 'unixepoch', 'localtime') as day,
+            SUM(input_tokens) as in_tok,
+            SUM(output_tokens) as out_tok,
+            SUM(input_tokens + output_tokens) as total_tok,
+            COUNT(*) as sessions
+        FROM sessions
+        WHERE started_at >= ?
+        GROUP BY day
+        ORDER BY day ASC
+    """, (time.time() - days * 86400,))
+
+    rows = cur.fetchall()
+    conn.close()
+
+    daily = [
+        {
+            "date": r[0],
+            "input": r[1] or 0,
+            "output": r[2] or 0,
+            "total": r[3] or 0,
+            "sessions": r[4] or 0,
+        }
+        for r in rows
+    ]
+    return jsonify({"days": days, "daily": daily})
+
 
 @app.route("/api/quota", methods=["GET"])
 def api_quota():

@@ -1083,6 +1083,43 @@ ul { list-style: none; }
   text-overflow: ellipsis;
 }
 
+/* ── Quota trend charts ── */
+.qb-trend-row {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-1);
+}
+.qb-trend-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.qb-trend-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.qb-trend-legend {
+  display: flex;
+  gap: 14px;
+  margin-top: 2px;
+}
+.qb-trend-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--ink-3);
+}
+.qb-trend-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
 @media (max-width: 600px) {
   .qb-detail-grid { grid-template-columns: repeat(3, 1fr); }
   .qb-bar-row { flex-direction: column; gap: 4px; }

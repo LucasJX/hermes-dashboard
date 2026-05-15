@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hermes Dashboard</title>
-  <link rel="stylesheet" href="/css/style.css?v=5.7" />
+  <link rel="stylesheet" href="/css/style.css?v=5.8" />
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🦞</text></svg>" />
 </head>
 <body>
@@ -300,7 +300,7 @@ function navigate(page) {
 async function renderDashboard() {
   $('#app').classList.add('app-loading');
   try {
-    let [stats, quota] = await Promise.all([api('/stats'), api('/quota')]);
+    let [stats, quota, quotaHistory] = await Promise.all([api('/stats'), api('/quota'), api('/quota/history')]);
     cache.stats = stats;
 
     const totalSessions = stats.total_sessions || 0;
@@ -457,6 +457,22 @@ async function renderDashboard() {
             <div class="qb-detail-cell"><div class="qb-dc-label">每周刷新</div><div class="qb-dc-val" id="qb-dc-weekly-reset">—</div></div>
             <div class="qb-detail-cell"><div class="qb-dc-label">每月刷新</div><div class="qb-dc-val" id="qb-dc-monthly-reset">—</div></div>
           </div>
+          <div class="qb-trend-row" id="qb-trend-row">
+            <div class="qb-trend-chart" id="qb-trend-chart-daily">
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <div class="qb-trend-label">每日用量趋势</div>
+                <div class="qb-trend-legend">
+                  <span class="qb-trend-legend-item">
+                    <span class="qb-trend-legend-dot" style="background:#0066cc"></span>输入
+                  </span>
+                  <span class="qb-trend-legend-item">
+                    <span class="qb-trend-legend-dot" style="background:#e07b39"></span>输出
+                  </span>
+                </div>
+              </div>
+              <svg id="qb-daily-svg" viewBox="0 0 340 130" style="width:100%;height:130px;overflow:visible"></svg>
+            </div>
+          </div>
         </div>
         ` : (quota.usage_stats ? `
         <div class="qb-body">
@@ -590,6 +606,226 @@ async function renderDashboard() {
 
       // Init with default model
       updateQuotaCard(defaultModel);
+
+      // ── Draw daily token usage trend chart ──────────────────────────────
+      function _renderQuotaDailyChart(dailyData) {
+        const svg = $('#qb-daily-svg');
+        if (!svg || !dailyData || dailyData.length === 0) return;
+
+        // ── Dimensions ──────────────────────────────────────────────────
+        const W = 340, H = 130;
+        const PAD = { l: 6, r: 6, t: 6, b: 22 };
+        const chartW = W - PAD.l - PAD.r;
+        const chartH = H - PAD.t - PAD.b;
+        const days = dailyData.slice(-8);
+        const n = days.length;
+        const stepX = chartW / Math.max(1, n - 1);
+
+        // ── Scales ───────────────────────────────────────────────────────
+        const maxIn  = Math.max(1, ...days.map(d => d.input));
+        const maxOut = Math.max(1, ...days.map(d => d.output));
+        const maxVal = Math.max(maxIn, maxOut);
+
+        const toX = i => PAD.l + i * stepX;
+        const toYIn  = v => PAD.t + chartH - (v / maxVal) * chartH;
+        const toYOut = v => PAD.t + chartH - (v / maxVal) * chartH;
+
+        // ── Helpers ──────────────────────────────────────────────────────
+        const fmtK = v => {
+          if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+          if (v >= 1e4) return Math.round(v / 1e3) + 'K';
+          if (v >= 1e3) return (v / 1e3).toFixed(1) + 'K';
+          return String(v);
+        };
+
+        // Catmull-Rom → cubic Bezier smooth path
+        const smoothPath = (pts) => {
+          if (pts.length < 2) return '';
+          let d = `M${pts[0].x.toFixed(2)},${pts[0].y.toFixed(2)}`;
+          for (let i = 0; i < pts.length - 1; i++) {
+            const p0 = i > 0 ? pts[i - 1] : pts[0];
+            const p1 = pts[i];
+            const p2 = pts[i + 1];
+            const p3 = i + 2 < pts.length ? pts[i + 2] : pts[pts.length - 1];
+            const cp1x = p1.x + (p2.x - p0.x) / 6;
+            const cp1y = p1.y + (p2.y - p0.y) / 6;
+            const cp2x = p2.x - (p3.x - p1.x) / 6;
+            const cp2y = p2.y - (p3.y - p1.y) / 6;
+            d += ` C${cp1x.toFixed(2)},${cp1y.toFixed(2)} ${cp2x.toFixed(2)},${cp2y.toFixed(2)} ${p2.x.toFixed(2)},${p2.y.toFixed(2)}`;
+          }
+          return d;
+        };
+
+        const areaPath = (pts) =>
+          smoothPath(pts) +
+          ` L${(PAD.l + chartW).toFixed(2)},${(PAD.t + chartH).toFixed(2)}` +
+          ` L${pts[0].x.toFixed(2)},${(PAD.t + chartH).toFixed(2)} Z`;
+
+        // Points arrays
+        const ptsIn  = days.map((d, i) => ({ x: toX(i), y: toYIn(d.input) }));
+        const ptsOut = days.map((d, i) => ({ x: toX(i), y: toYOut(d.output) }));
+
+        const pathIn  = smoothPath(ptsIn);
+        const pathOut = smoothPath(ptsOut);
+        const areaIn  = areaPath(ptsIn);
+        const areaOut = areaPath(ptsOut);
+
+        // ── Gradient defs ────────────────────────────────────────────────
+        const gradIn = `
+          <linearGradient id="qGradIn" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"   stop-color="#0066cc" stop-opacity="0.45"/>
+            <stop offset="60%"  stop-color="#0066cc" stop-opacity="0.12"/>
+            <stop offset="100%" stop-color="#0066cc" stop-opacity="0.02"/>
+          </linearGradient>`;
+        const gradOut = `
+          <linearGradient id="qGradOut" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%"   stop-color="#e07b39" stop-opacity="0.50"/>
+            <stop offset="60%"  stop-color="#e07b39" stop-opacity="0.15"/>
+            <stop offset="100%" stop-color="#e07b39" stop-opacity="0.02"/>
+          </linearGradient>`;
+
+        // ── Grid lines ───────────────────────────────────────────────────
+        const gridLines = [0, 0.25, 0.5, 0.75, 1].map(t => {
+          const y = PAD.t + chartH * t;
+          const label = fmtK(maxVal * (1 - t));
+          return `
+            <line x1="${PAD.l}" y1="${y.toFixed(2)}" x2="${PAD.l + chartW}" y2="${y.toFixed(2)}"
+                  stroke="var(--ink-4)" stroke-width="${t === 0 || t === 1 ? 0.8 : 0.5}"
+                  stroke-dasharray="${t === 0 || t === 1 ? '' : '3,4'}"/>
+            <text x="${PAD.l - 2}" y="${(y + 3.5).toFixed(2)}"
+                  text-anchor="end" font-size="8.5" fill="var(--ink-3)"
+                  font-family="var(--font)">${label}</text>`;
+        }).join('');
+
+        // ── Bottom axis labels (dates) ───────────────────────────────────
+        const xLabels = days.map((d, i) => {
+          const show = i === 0 || i === n - 1 || n <= 6;
+          if (!show && n > 6 && i % 2 !== 0) return '';
+          return `<text x="${toX(i).toFixed(2)}" y="${H - 4}"
+                        text-anchor="middle" font-size="9"
+                        fill="var(--ink-3)" font-family="var(--font)">${d.date.slice(5)}</text>`;
+        }).join('');
+
+        // ── Data dots ───────────────────────────────────────────────────
+        const dotIn = ptsIn.map((p, i) =>
+          `<circle cx="${p.x.toFixed(2)}" cy="${p.y.toFixed(2)}" r="3"
+                   fill="#0066cc" opacity="0.85"
+                   data-i="${i}" data-date="${days[i].date}"
+                   data-in="${days[i].input}" data-out="${days[i].output}"
+                   class="qd-dot qd-dot-in"/>`
+        ).join('');
+        const dotOut = ptsOut.map((p, i) =>
+          `<circle cx="${p.x.toFixed(2)}" cy="${p.y.toFixed(2)}" r="3"
+                   fill="#e07b39" opacity="0.85"
+                   data-i="${i}" data-date="${days[i].date}"
+                   data-in="${days[i].input}" data-out="${days[i].output}"
+                   class="qd-dot qd-dot-out"/>`
+        ).join('');
+
+        // ── Hover overlay ────────────────────────────────────────────────
+        const hoverLine = `<line id="qd-hover-line" x1="0" y1="${PAD.t}" x2="0" y2="${PAD.t + chartH}"
+                                stroke="var(--ink-3)" stroke-width="1" stroke-dasharray="3,3" opacity="0"/>`;
+        const tooltipBox = `
+          <g id="qd-tooltip" opacity="0">
+            <rect id="qd-tip-bg" width="108" height="50" rx="8" ry="8"
+                  fill="var(--ink)" opacity="0.92"/>
+            <text id="qd-tip-date" x="10" y="16" font-size="9.5"
+                  fill="rgba(255,255,255,0.7)" font-family="var(--font)"></text>
+            <text id="qd-tip-in" x="10" y="30" font-size="10.5" font-weight="700"
+                  fill="#6eb5ff" font-family="var(--font)"></text>
+            <text id="qd-tip-out" x="10" y="44" font-size="10.5" font-weight="700"
+                  fill="#ffb078" font-family="var(--font)"></text>
+          </g>`;
+
+        // ── Baseline ─────────────────────────────────────────────────────
+        const baseline = `
+          <line x1="${PAD.l}" y1="${PAD.t + chartH}" x2="${PAD.l + chartW}" y2="${PAD.t + chartH}"
+                stroke="var(--ink-4)" stroke-width="0.8"/>`;
+
+        // ── Assemble SVG ─────────────────────────────────────────────────
+        svg.innerHTML = `
+          <defs>${gradIn}${gradOut}</defs>
+          ${gridLines}
+          ${baseline}
+          <path d="${areaIn}"  fill="url(#qGradIn)"  />
+          <path d="${areaOut}" fill="url(#qGradOut)" />
+          <path d="${pathIn}"  fill="none" stroke="#0066cc" stroke-width="2.2"
+                stroke-linejoin="round" stroke-linecap="round"/>
+          <path d="${pathOut}" fill="none" stroke="#e07b39" stroke-width="2.2"
+                stroke-linejoin="round" stroke-linecap="round"/>
+          ${dotIn}
+          ${dotOut}
+          ${hoverLine}
+          ${tooltipBox}
+          ${xLabels}
+        `;
+
+        // ── Hover interaction ────────────────────────────────────────────
+        const hoverLineEl = svg.querySelector('#qd-hover-line');
+        const tooltipEl   = svg.querySelector('#qd-tooltip');
+        const tipDateEl   = svg.querySelector('#qd-tip-date');
+        const tipInEl     = svg.querySelector('#qd-tip-in');
+        const tipOutEl    = svg.querySelector('#qd-tip-out');
+
+        svg.addEventListener('mousemove', (e) => {
+          const rect = svg.getBoundingClientRect();
+          const mx = (e.clientX - rect.left) * (W / rect.width);
+
+          // Find nearest dot
+          let nearest = null, minDist = Infinity;
+          ptsIn.forEach((p, i) => {
+            const d = Math.abs(p.x - mx);
+            if (d < minDist) { minDist = d; nearest = i; }
+          });
+          if (nearest === null) return;
+
+          const px = ptsIn[nearest].x;
+          const py = PAD.t + chartH / 2;
+          const date = days[nearest].date;
+          const vin  = days[nearest].input;
+          const vout = days[nearest].output;
+
+          // Position tooltip: flip left/right if near right edge
+          const tipW = 108, tipH = 50;
+          const tx = px + tipW / 2 + 8 > W ? px - tipW - 8 : px + 8;
+          const ty = Math.max(PAD.t, py - tipH / 2);
+
+          hoverLineEl.setAttribute('x1', px); hoverLineEl.setAttribute('x2', px);
+          hoverLineEl.setAttribute('opacity', '1');
+
+          tipDateEl.textContent = date;
+          tipInEl.textContent  = '↑ ' + fmtK(vin);
+          tipOutEl.textContent = '↓ ' + fmtK(vout);
+
+          tooltipEl.setAttribute('transform', `translate(${tx.toFixed(2)},${ty.toFixed(2)})`);
+          tooltipEl.setAttribute('opacity', '1');
+
+          // Highlight active dots
+          svg.querySelectorAll('.qd-dot').forEach(c => {
+            const idx = parseInt(c.dataset.i);
+            c.setAttribute('r', idx === nearest ? '5' : '3');
+            c.setAttribute('opacity', idx === nearest ? '1' : '0.5');
+          });
+        });
+
+        svg.addEventListener('mouseleave', () => {
+          hoverLineEl.setAttribute('opacity', '0');
+          tooltipEl.setAttribute('opacity', '0');
+          svg.querySelectorAll('.qd-dot').forEach(c => {
+            c.setAttribute('r', '3');
+            c.setAttribute('opacity', '0.85');
+          });
+        });
+      }
+
+      // Render chart if history data available
+      if (quotaHistory?.daily?.length > 0) {
+        _renderQuotaDailyChart(quotaHistory.daily);
+      } else {
+        // Show empty state in chart area
+        const svg = $('#qb-daily-svg');
+        if (svg) svg.innerHTML = `<text x="160" y="44" text-anchor="middle" fill="var(--ink-3)" font-size="11" font-family="var(--font)">暂无历史数据</text>`;
+      }
 
       // Refresh button
       $('#qb-refresh-btn')?.addEventListener('click', () => {
