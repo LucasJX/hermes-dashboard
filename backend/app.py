@@ -1939,7 +1939,7 @@ def _get_latest_release():
             _VERSION_CACHE["ts"] = now
             return result
     except Exception:
-        # Fallback: try git fetch in hermes-agent repo
+        # Fallback: try git tag annotation in hermes-agent repo
         try:
             agent_dir = os.path.join(HERMES_HOME, "hermes-agent")
             if os.path.isdir(os.path.join(agent_dir, ".git")):
@@ -1947,32 +1947,55 @@ def _get_latest_release():
                     ["git", "fetch", "--tags", "--quiet"],
                     cwd=agent_dir, capture_output=True, timeout=10
                 )
+                # Get latest tag that looks like a semver release
                 tag_out = subprocess.run(
-                    ["git", "describe", "--tags", "--abbrev=0", "origin/main"],
+                    ["git", "tag", "-l", "--sort=-v:refname"],
                     cwd=agent_dir, capture_output=True, text=True, timeout=5
                 )
                 if tag_out.returncode == 0:
-                    t = tag_out.stdout.strip()
-                    # Try to get semver from tag annotation: "Hermes Agent v0.13.0 (2026.5.7)"
+                    import re as _re
                     version = None
-                    tag_msg = subprocess.run(
-                        ["git", "tag", "-n1", t],
-                        cwd=agent_dir, capture_output=True, text=True, timeout=5
-                    )
-                    if tag_msg.returncode == 0:
-                        import re as _re
-                        # Match "Hermes Agent v0.13.0" but NOT "v2026.5.7" (date tag)
-                        m = _re.search(r'Agent\s+v(\d+\.\d+\.\d+)', tag_msg.stdout)
+                    chosen_tag = None
+                    chosen_body = ""
+                    # Find first tag that has a semver annotation
+                    for t in tag_out.stdout.strip().split("\n"):
+                        t = t.strip()
+                        if not t:
+                            continue
+                        # Get full tag annotation (all lines)
+                        tag_msg = subprocess.run(
+                            ["git", "tag", "-n999", t],
+                            cwd=agent_dir, capture_output=True, text=True, timeout=5
+                        )
+                        full_annotation = tag_msg.stdout if tag_msg.returncode == 0 else ""
+                        # Extract semver from annotation
+                        m = _re.search(r'Agent\s+v(\d+\.\d+\.\d+)', full_annotation)
                         if not m:
-                            m = _re.search(r'v(\d+\.\d+\.\d+)', tag_msg.stdout)
+                            m = _re.search(r'v(\d+\.\d+\.\d+)', full_annotation)
                         if m:
                             version = m.group(1)
-                    if not version:
-                        version = t.lstrip("v")
-                    result = {"version": version, "tag": t, "name": "", "body": "", "published_at": "", "html_url": ""}
-                    _VERSION_CACHE["data"] = result
-                    _VERSION_CACHE["ts"] = now
-                    return result
+                            chosen_tag = t
+                            # Body is everything after the first line (tag name + version)
+                            lines = full_annotation.split("\n", 1)
+                            chosen_body = lines[1].strip() if len(lines) > 1 else ""
+                            break
+                    if not version and tag_out.stdout:
+                        # Fall back to latest tag by date
+                        for t in tag_out.stdout.strip().split("\n"):
+                            t = t.strip()
+                            if t and not t.startswith("v2026"):
+                                chosen_tag = t
+                                version = t.lstrip("v")
+                                break
+                    if version:
+                        result = {
+                            "version": version, "tag": chosen_tag or version,
+                            "name": f"Hermes Agent v{version}", "body": chosen_body,
+                            "published_at": "", "html_url": ""
+                        }
+                        _VERSION_CACHE["data"] = result
+                        _VERSION_CACHE["ts"] = now
+                        return result
         except Exception:
             pass
     return None
@@ -2055,15 +2078,15 @@ _CACHE_DIR = os.path.expanduser("~/.hermes/dashboard-cache")
 _CACHE_FILE = os.path.join(_CACHE_DIR, "changelog.json")
 
 def _load_changelog_cache():
-    """Load cached translated changelog from disk. Returns (version, changelog) or (None, None)."""
+    """Load cached translated changelog from disk. Returns (version, changelog, cached_at) or (None, None, None)."""
     try:
         if os.path.exists(_CACHE_FILE):
             with open(_CACHE_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return data.get("version"), data.get("changelog", {})
+            return data.get("version"), data.get("changelog", {}), data.get("cached_at")
     except Exception:
         pass
-    return None, None
+    return None, None, None
 
 def _save_changelog_cache(version, changelog):
     """Save translated changelog to disk."""
@@ -2074,26 +2097,89 @@ def _save_changelog_cache(version, changelog):
     except Exception:
         pass
 
-def _translate_changelog(changelog, version):
-    """Summarize + translate to Chinese.
-    v0.13.0: hardcoded curated Chinese summary (condensed from 374 raw entries).
-    Future versions: regex-based Chinese normalization of cleaned English.
-    """
-    if not changelog:
-        return changelog
+def _call_llm_via_opencc(prompt, timeout=120):
+    """Call opencc chat for LLM translation — works reliably in this environment."""
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["opencc", "chat", prompt],
+            capture_output=True, text=True, timeout=timeout
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except Exception:
+        pass
+    return None
 
-    # ── 1. Cache check ──
-    if _TRANSLATED_CACHE.get("version") == version and _TRANSLATED_CACHE.get("data"):
+
+def _call_llm_minimax(prompt, timeout=120):
+    """Call MiniMax API directly with credentials from ~/.opencc-cli.conf."""
+    import urllib.request, re as _re
+
+    # 读取 opencc 配置获取 API 凭证
+    api_url, api_key = None, None
+    try:
+        conf_file = __import__("os").path.expanduser("~/.opencc-cli.conf")
+        with open(conf_file) as f:
+            for line in f:
+                if "=" in line:
+                    k, v = line.strip().split("=", 1)
+                    if k == "API_URL":
+                        api_url = v.strip().strip('"')
+                    elif k == "API_KEY":
+                        api_key = v.strip().strip('"')
+    except Exception:
+        pass
+
+    if not api_url or not api_key:
+        return None
+
+    payload = {
+        "model": "MiniMax-M2.5",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 4000,
+        "temperature": 0.3,
+    }
+
+    try:
+        req = urllib.request.Request(
+            f"{api_url}/v1/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read())
+            content = data["choices"][0]["message"]["content"]
+            # 去掉 <Thinking> 标签
+            if "</think>" in content:
+                content = content.split("</think>")[-1]
+            return content.strip()
+    except Exception:
+        return None
+
+
+def _translate_changelog(changelog, version, raw_body=None):
+    """Summarize + translate to Chinese with dynamic categorization.
+    流程：有缓存→直接返回 | 新版本→LLM总结+动态分类+翻译→写缓存
+    """
+    # ── 0. 无 changelog 但有 raw_body 时，直接跳过缓存走 LLM ──
+    _skip_cache_check = not changelog and bool(raw_body)
+
+    # ── 1. 内存缓存检查 ──
+    if not _skip_cache_check and _TRANSLATED_CACHE.get("version") == version and _TRANSLATED_CACHE.get("data"):
         return _TRANSLATED_CACHE["data"]
 
-    cached_ver, cached_data = _load_changelog_cache()
-    if cached_ver == version and cached_data:
-        _TRANSLATED_CACHE["version"] = version
-        _TRANSLATED_CACHE["data"] = cached_data
-        return cached_data
+    # ── 2. 磁盘缓存检查 ──
+    if not _skip_cache_check:
+        cached_ver, cached_data, _ = _load_changelog_cache()
+        if cached_ver == version and cached_data:
+            _TRANSLATED_CACHE["version"] = version
+            _TRANSLATED_CACHE["data"] = cached_data
+            return cached_data
 
-    # ── 2. v0.13.0 curated Chinese summary ──
-    if version and version.strip().startswith("0.13"):
+    # ── 3. v0.13.0 硬编码中文摘要（历史版本） ──
+    if not _skip_cache_check and version and version.strip().startswith("0.13"):
         translated = {
             "🚀 新功能": [
                 "**video_analyze** — 原生视频理解工具，Gemini 及兼容多模态模型直读视频帧，无需截图",
@@ -2144,82 +2230,116 @@ def _translate_changelog(changelog, version):
         _save_changelog_cache(version, translated)
         return translated
 
-    # ── 3. Future versions: clean markdown + simple Chinese normalization ──
+    # ── 4. LLM 总结 + 动态分类 + 翻译 ──
     import re
 
+    def _build_llm_prompt(body_text, offset=0):
+        return (
+            "You are a professional technical writer. Read these Hermes Agent release notes (English) "
+            "and output a structured Chinese changelog.\n\n"
+            "Output format — return ONLY valid JSON like this (no markdown, no explanation):\n"
+            '{\n "categories": {\n   "🚀 新功能": ["item1", "item2", ...],\n   "⚡ 核心改进": [...],\n   ...\n }\n}\n\n'
+            "Rules:\n"
+            "1. Dynamically decide 3~6 categories based on content — do NOT use fixed categories\n"
+            "2. Each item: concise Chinese translation (under 60 chars)\n"
+            "3. DO NOT include PR numbers, issue numbers, or any markdown links like ([#12345](url)) or [text](url) — strip them completely\n"
+            "4. Keep technical terms in English: API, CLI, LLM, MCP, GitHub, HTTP, JSON, YAML, OAuth, SSE, TTS, ASR, CDP, WebSocket, etc.\n"
+            "5. Keep platform names in English: Discord, Telegram, Slack, WhatsApp, Matrix, WeChat, Line, SimpleX, etc.\n"
+            "6. Prioritize the most important items — trim to top 50 items total across all categories\n"
+            "7. Return ONLY the JSON, no markdown code blocks, no text outside the JSON\n\n"
+            f"[Items {offset+1}-end of release notes — process all that are relevant]\n"
+            + body_text
+        )
+
+    def _call_any_llm(prompt):
+        """Use MiniMax API directly for reliable LLM translation."""
+        return _call_llm_minimax(prompt, timeout=120)
+
+    # 对 raw_body 按行拆分，只取 bullet items
+    if not raw_body:
+        raw_body = ""
+
+    bullet_lines = []
+    for line in raw_body.split("\n"):
+        stripped = line.strip()
+        if (stripped.startswith("-")
+            and not stripped.startswith("---")
+            and not stripped.startswith("- **Full Changelog**")
+            and len(stripped) > 5):
+            bullet_lines.append(stripped.lstrip("- ").strip())
+
+    if not bullet_lines:
+        # fallback: use already-parsed changelog items
+        all_items = []
+        for cat, items in changelog.items():
+            all_items.extend(items)
+        bullet_text = "\n".join(f"- {it}" for it in all_items[:80])
+    else:
+        bullet_text = "\n".join(f"- {ln}" for ln in bullet_lines[:80])
+
+    # 调用 LLM
+    prompt = _build_llm_prompt(bullet_text)
+    llm_output = _call_any_llm(prompt)
+
+    if llm_output:
+        try:
+            # 去掉可能的 markdown json block 标记
+            cleaned = llm_output.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```json\s*", "", cleaned)
+                cleaned = re.sub(r"```\s*$", "", cleaned)
+            parsed = json.loads(cleaned)
+            categories = parsed.get("categories", {})
+            if categories:
+                _TRANSLATED_CACHE["version"] = version
+                _TRANSLATED_CACHE["data"] = categories
+                _save_changelog_cache(version, categories)
+                return categories
+        except json.JSONDecodeError:
+            pass
+
+    # ── 5. Fallback: 简单关键词替换（LLM 完全不可用时） ──
+    import re as _re
+
     def _clean(text):
-        """Remove markdown, normalize whitespace."""
-        text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
-        text = re.sub(r'\*([^*]+)\*', r'\1', text)
-        text = re.sub(r'`([^`]+)`', r'\1', text)
-        text = re.sub(r'\s*\([^)]*#\d+[^)]*\)', ' ', text)
-        text = re.sub(r'\s*\([^)»]*HTTPS[^)]*\)', '', text)
-        text = re.sub(r'\s*@\w+\s*', ' ', text)
-        return re.sub(r'\s+', ' ', text).strip()
+        text = _re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+        text = _re.sub(r'\*([^*]+)\*', r'\1', text)
+        text = _re.sub(r'`([^`]+)`', r'\1', text)
+        text = _re.sub(r'\s*\([^)]*#\d+[^)]*\)', ' ', text)
+        text = _re.sub(r'\s*\([^)»]*HTTPS[^)]*\)', '', text)
+        text = _re.sub(r'\s*@\w+\s*', ' ', text)
+        return _re.sub(r'\s+', ' ', text).strip()
 
     def _zh(text):
-        """Simple Chinese normalization of common English changelog phrases."""
         t = _clean(text)
-        # Common patterns
         replacements = [
-            (r'\bNew\b', '新增'),
-            (r'\bAdd\b', '新增'),
-            (r'\bAddeds\b', '新增'),
-            (r'\bIntroduce[d]?\b', '引入'),
-            (r'\bSupport[s]?\b', '支持'),
-            (r'\bFix(?:es)?\b', '修复'),
-            (r'\bFix:\s*', '修复：'),
-            (r'\bImprovement[s]?\b', '改进'),
-            (r'\bEnhancement[s]?\b', '增强'),
-            (r'\bUpdate[s]?\b', '更新'),
-            (r'\bRefactor(?:ed|ing)?\b', '重构'),
-            (r'\bDeprecate[ds]?\b', '废弃'),
-            (r'\bRemove[ds]?\b', '移除'),
-            (r'\bBreaking\b', '破坏性变更'),
-            (r'\bPerformance\b', '性能'),
-            (r'\bFeature[s]?\b', '功能'),
-            (r'\bOptional\s+skill[s]?\b', '可选技能'),
-            (r'\bSecurity\b', '安全'),
-            (r'\bPlugin[s]?\b', '插件'),
-            (r'\bTool[s]?\b', '工具'),
-            (r'\bProvider[s]?\b', 'Provider'),
-            (r'\bMCP\b', 'MCP'),
-            (r'\bAPI\b', 'API'),
-            (r'\bCLI\b', 'CLI'),
-            (r'\bTUI\b', 'TUI'),
-            (r'\bGUI\b', 'GUI'),
-            (r'\bDashboard\b', 'Dashboard'),
-            (r'\bCron\b', 'Cron'),
-            (r'\bOAuth\b', 'OAuth'),
-            (r'\bOAuth 2\b', 'OAuth 2.0'),
-            (r'\bSSE\b', 'SSE'),
-            (r'\bTTS\b', 'TTS'),
-            (r'\bASR\b', 'ASR'),
-            (r'\bLLM\b', 'LLM'),
-            (r'\bJSON\b', 'JSON'),
-            (r'\bYAML\b', 'YAML'),
-            (r'\bTOML\b', 'TOML'),
-            (r'\bPython\b', 'Python'),
-            (r'\bLinux\b', 'Linux'),
-            (r'\bmacOS\b', 'macOS'),
-            (r'\bWindows\b', 'Windows'),
-            (r'\bDocker\b', 'Docker'),
-            (r'\bKubernetes\b', 'Kubernetes'),
-            (r'\bGitHub\b', 'GitHub'),
-            (r'\bDiscord\b', 'Discord'),
-            (r'\bTelegram\b', 'Telegram'),
-            (r'\bSlack\b', 'Slack'),
-            (r'\bMatrix\b', 'Matrix'),
-            (r'\bWeixin\b', '微信'),
-            (r'\bWhatsApp\b', 'WhatsApp'),
-            (r'\bGoogle\b', 'Google'),
-            (r'\bClaude\b', 'Claude'),
-            (r'\bGemini\b', 'Gemini'),
-            (r'\bOpenAI\b', 'OpenAI'),
+            (r'\bNew\b', '新增'), (r'\bAdd\b', '新增'), (r'\bAddeds\b', '新增'),
+            (r'\bIntroduce[d]?\b', '引入'), (r'\bSupport[s]?\b', '支持'),
+            (r'\bFix(?:es)?\b', '修复'), (r'\bFix:\s*', '修复：'),
+            (r'\bImprovement[s]?\b', '改进'), (r'\bEnhancement[s]?\b', '增强'),
+            (r'\bUpdate[s]?\b', '更新'), (r'\bRefactor(?:ed|ing)?\b', '重构'),
+            (r'\bDeprecate[ds]?\b', '废弃'), (r'\bRemove[ds]?\b', '移除'),
+            (r'\bBreaking\b', '破坏性变更'), (r'\bPerformance\b', '性能'),
+            (r'\bFeature[s]?\b', '功能'), (r'\bOptional\s+skill[s]?\b', '可选技能'),
+            (r'\bSecurity\b', '安全'), (r'\bPlugin[s]?\b', '插件'),
+            (r'\bTool[s]?\b', '工具'), (r'\bProvider[s]?\b', 'Provider'),
+            (r'\bMCP\b', 'MCP'), (r'\bAPI\b', 'API'), (r'\bCLI\b', 'CLI'),
+            (r'\bTUI\b', 'TUI'), (r'\bGUI\b', 'GUI'), (r'\bDashboard\b', 'Dashboard'),
+            (r'\bCron\b', 'Cron'), (r'\bOAuth\b', 'OAuth'), (r'\bOAuth 2\b', 'OAuth 2.0'),
+            (r'\bSSE\b', 'SSE'), (r'\bTTS\b', 'TTS'), (r'\bASR\b', 'ASR'),
+            (r'\bLLM\b', 'LLM'), (r'\bJSON\b', 'JSON'), (r'\bYAML\b', 'YAML'),
+            (r'\bTOML\b', 'TOML'), (r'\bPython\b', 'Python'), (r'\bLinux\b', 'Linux'),
+            (r'\bmacOS\b', 'macOS'), (r'\bWindows\b', 'Windows'), (r'\bDocker\b', 'Docker'),
+            (r'\bKubernetes\b', 'Kubernetes'), (r'\bGitHub\b', 'GitHub'),
+            (r'\bDiscord\b', 'Discord'), (r'\bTelegram\b', 'Telegram'),
+            (r'\bSlack\b', 'Slack'), (r'\bMatrix\b', 'Matrix'),
+            (r'\bWeixin\b', '微信'), (r'\bWhatsApp\b', 'WhatsApp'),
+            (r'\bGoogle\b', 'Google'), (r'\bClaude\b', 'Claude'),
+            (r'\bGemini\b', 'Gemini'), (r'\bOpenAI\b', 'OpenAI'),
             (r'\bAnthropic\b', 'Anthropic'),
         ]
         for pattern, replacement in replacements:
-            t = re.sub(pattern, replacement, t, flags=re.IGNORECASE)
+            t = _re.sub(pattern, replacement, t, flags=_re.IGNORECASE)
         return t
 
     translated = {}
@@ -2234,39 +2354,63 @@ def _translate_changelog(changelog, version):
 
 
 
+_CACHE_TTL = 86400  # 24 hours — 新版检测窗口
+
+
 @app.route("/api/version", methods=["GET"])
 def api_version():
-    """Check file cache first: if latest version matches cached version → return cached changelog immediately"""
+    """缓存策略：
+    - 缓存新鲜（<24h）→ 直接返回，跳过所有 GitHub 调用
+    - 缓存过期（>=24h）→ 静默查 GitHub 版本号
+      - 版本相同 → 继续用缓存
+      - 版本变新 → 拉取 + 翻译 + 更新缓存
+    - 无缓存 → 完整拉取流程
+    """
     local = _get_local_version()
 
-    # ── 1. Try file cache first (skip GitHub fetch entirely if version unchanged) ──
-    cached_ver, cached_changelog = _load_changelog_cache()
+    # ── 1. 读文件缓存（含时间戳）──
+    cached_ver, cached_changelog, cached_at = _load_changelog_cache()
 
-    latest = _get_latest_release()
-    latest_version = latest.get("version") if latest else None
+    now = time.time()
 
-    # If cached version matches latest, use cached changelog directly
-    if cached_ver == latest_version and cached_changelog:
+    def _use_cache():
+        """用缓存数据响应（不调 GitHub）"""
         update_available = False
-        if local and latest_version:
+        if local and cached_ver:
             try:
                 local_parts = [int(x) for x in local.split(".")]
-                latest_parts = [int(x) for x in latest_version.split(".")]
-                update_available = latest_parts > local_parts
+                cached_parts = [int(x) for x in cached_ver.split(".")]
+                update_available = cached_parts > local_parts
             except (ValueError, TypeError):
-                update_available = local != latest_version
-
+                update_available = local != cached_ver
         return jsonify({
             "local_version": local,
-            "latest_version": latest_version,
-            "latest_tag": latest.get("tag", "") if latest else "",
-            "latest_name": latest.get("name", "") if latest else "",
-            "published_at": latest.get("published_at", "") if latest else "",
-            "html_url": latest.get("html_url", "") if latest else "",
+            "latest_version": cached_ver,
+            "latest_tag": "", "latest_name": "", "published_at": "", "html_url": "",
             "update_available": update_available,
             "changelog": cached_changelog,
         })
 
+    # ── 2. 有缓存且新鲜（<24h）→ 直接返回 ──
+    if cached_ver and cached_at:
+        try:
+            cached_ts = datetime.fromisoformat(cached_at).timestamp()
+            if now - cached_ts < _CACHE_TTL:
+                return _use_cache()
+        except Exception:
+            pass
+
+    # ── 3. 缓存不存在或已过期 → 查 GitHub ──
+    latest = _get_latest_release()
+    latest_version = latest.get("version") if latest else None
+
+    # ── 3a. 缓存存在但版本相同 → 刷新缓存时间，继续用缓存（不重复拉 changelog）──
+    if cached_ver and latest_version and cached_ver == latest_version:
+        # 版本没变，但刷新缓存时间戳（前端下次直接用缓存）
+        _save_changelog_cache(cached_ver, cached_changelog)
+        return _use_cache()
+
+    # ── 3b. 无缓存 或 版本已变 → 完整拉取 + 翻译 + 保存 ──
     update_available = False
     if local and latest_version:
         try:
@@ -2279,7 +2423,9 @@ def api_version():
     changelog = {}
     if latest and latest.get("body"):
         changelog = _parse_changelog(latest["body"])
-        changelog = _translate_changelog(changelog, latest_version)
+        changelog = _translate_changelog(changelog, latest_version, latest.get("body"))
+        if changelog and latest_version:
+            _save_changelog_cache(latest_version, changelog)
 
     return jsonify({
         "local_version": local,

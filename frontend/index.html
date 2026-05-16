@@ -283,6 +283,9 @@ const escHtml = escapeHtml;
 function renderMarkdown(text) {
   if (!text) return '';
   return String(text)
+    // Strip markdown links first: [text](url) → text, [#12345](url) → removed
+    .replace(/\[([^\]]*)\]\(https?:\/\/[^)]+\)/g, '$1')
+    .replace(/\[\s*#[0-9]+\s*\]\([^)]+\)/g, '')
     .replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
       const escaped = code.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
       return `<pre><code class="lang-${lang}">${escaped}</code></pre>`;
@@ -518,7 +521,7 @@ async function renderDashboard() {
                   </span>
                 </div>
               </div>
-              <svg id="qb-daily-svg" class="qd-tooltip-g" viewBox="0 0 340 130" style="width:100%;height:130px;overflow:visible"></svg>
+              <svg id="qb-daily-svg" class="qd-tooltip-g" viewBox="0 0 800 130" style="width:100%;height:130px;overflow:visible"></svg>
             </div>
           </div>
         </div>
@@ -660,9 +663,14 @@ async function renderDashboard() {
         const svg = $('#qb-daily-svg');
         if (!svg || !dailyData || dailyData.length === 0) return;
 
+        // ── Dynamic viewBox: adapt to real container width ─────────────────
+        const containerW = svg.parentElement.getBoundingClientRect().width;
+        const W = Math.round(containerW);
+        const H = 130;
+        svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
         // ── Dimensions ──────────────────────────────────────────────────
-        const W = 340, H = 130;
-        const PAD = { l: 6, r: 6, t: 6, b: 22 };
+        const PAD = { l: 4, r: 40, t: 6, b: 22 };
         const chartW = W - PAD.l - PAD.r;
         const chartH = H - PAD.t - PAD.b;
         const days = dailyData.slice(-8);
@@ -740,8 +748,8 @@ async function renderDashboard() {
             <line x1="${PAD.l}" y1="${y.toFixed(2)}" x2="${PAD.l + chartW}" y2="${y.toFixed(2)}"
                   stroke="var(--ink-4)" stroke-width="${t === 0 || t === 1 ? 0.8 : 0.5}"
                   stroke-dasharray="${t === 0 || t === 1 ? '' : '3,4'}"/>
-            <text x="${PAD.l - 2}" y="${(y + 3.5).toFixed(2)}"
-                  text-anchor="end" font-size="8.5" fill="var(--ink-3)"
+            <text x="${(PAD.l + chartW + 2).toFixed(2)}" y="${(y + 3.5).toFixed(2)}"
+                  text-anchor="start" font-size="8.5" fill="var(--ink-3)"
                   font-family="var(--font)">${label}</text>`;
         }).join('');
 
@@ -1151,8 +1159,17 @@ function _renderChangelog(panel, data) {
 
   const published = data.published_at ? new Date(data.published_at).toLocaleDateString('zh-CN') : '';
 
-  // Keywords that indicate a NEW feature (for badge)
-  const newKeywords = ['新增', 'NEW', 'new', '新增功能', 'First release'];
+  // Category color theme map
+  const catTheme = {
+    '🚀': { bg: 'rgba(0,102,204,0.08)', color: '#0066cc', border: 'rgba(0,102,204,0.2)' },
+    '⚡': { bg: 'rgba(245,158,11,0.10)', color: '#d97706', border: 'rgba(245,158,11,0.25)' },
+    '🔌': { bg: 'rgba(124,58,237,0.08)', color: '#7c3aed', border: 'rgba(124,58,237,0.2)' },
+    '🛡': { bg: 'rgba(220,38,38,0.08)', color: '#dc2626', border: 'rgba(220,38,38,0.2)' },
+    '🔧': { bg: 'rgba(16,185,129,0.08)', color: '#059669', border: 'rgba(16,185,129,0.2)' },
+    '🔐': { bg: 'rgba(220,38,38,0.08)', color: '#dc2626', border: 'rgba(220,38,38,0.2)' },
+    '✨': { bg: 'rgba(0,102,204,0.08)', color: '#0066cc', border: 'rgba(0,102,204,0.2)' },
+  };
+  const defaultTheme = { bg: 'var(--surface-2)', color: 'var(--ink-1)', border: 'var(--border-2)' };
 
   // Build category HTML — items have data-text attribute for animation
   let catHTML = '';
@@ -1160,19 +1177,19 @@ function _renderChangelog(panel, data) {
   for (const [cat, items] of Object.entries(cl)) {
     const catIcon = cat.split(' ')[0];
     const catName = cat.split(' ').slice(1).join(' ');
+    const theme = catTheme[catIcon] || defaultTheme;
+    const style = `style="background:${theme.bg};color:${theme.color};border-left:3px solid ${theme.color}"`;
     catHTML += `
       <div class="cl-category">
-        <div class="cl-cat-header" onclick="this.parentElement.classList.toggle('collapsed')">
+        <div class="cl-cat-header" ${style} onclick="this.parentElement.classList.toggle('collapsed')">
           <span class="cl-cat-arrow">▾</span>
           ${catIcon} ${catName}
           <span class="cl-cat-count">${items.length}</span>
         </div>
         <div class="cl-items">
           ${items.map(item => {
-            // Check if item looks like a NEW feature
-            const isNew = newKeywords.some(kw => item.startsWith(kw)) || item.includes('**NEW**');
-            const cleanItem = item.replace(/\*\*NEW\*\*/g, '').trim();
-            return `<div class="cl-item" data-cl-idx="${flatIdx++}"><span class="cl-text">${renderMarkdown(escapeHtml(cleanItem))}</span>${isNew ? '<span class="cl-new-badge">NEW</span>' : ''}</div>`;
+            const cleanItem = item.trim();
+            return `<div class="cl-item" data-cl-idx="${flatIdx++}"><span class="cl-text">${renderMarkdown(escapeHtml(cleanItem))}</span></div>`;
           }).join('')}
         </div>
       </div>`;
