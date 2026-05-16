@@ -1285,6 +1285,9 @@ async function _doUpdate() {
   btn.disabled = true;
   btn.innerHTML = '<span class="vb-btn-icon">⏳</span> 更新中…';
 
+  // Show PS5-style trophy: "正在更新…"
+  _showTrophy('⏳', '正在更新 Hermes Agent', '更新完成后将自动刷新页面', 'info', 30000);
+
   try {
     await fetch(API + '/version/update', {
       method: 'POST',
@@ -1298,24 +1301,33 @@ async function _doUpdate() {
         if (st.status === 'done') {
           clearInterval(poll);
           btn.innerHTML = '<span class="vb-btn-icon">✅</span> 更新完成';
-          toast('Hermes 更新成功！刷新页面生效', 'success');
-          // Refresh version info after 2s
-          setTimeout(() => _checkVersion(), 2000);
+          // PS5 trophy: success
+          _showTrophy('🏆', '更新成功', `Hermes Agent <code>${st.local_version || ''}</code> 已就绪，页面即将刷新…`, 'success', 3000);
+          // Auto-reload after 3s
+          setTimeout(() => location.reload(), 3000);
         } else if (st.status === 'error') {
           clearInterval(poll);
-          btn.innerHTML = '<span class="vb-btn-icon">❌</span> 更新失败';
           btn.disabled = false;
-          toast('更新失败: ' + (st.output || '未知错误'), 'error');
+          btn.innerHTML = '<span class="vb-btn-icon">⬆</span> 立即更新';
+          const errMsg = st.log_tail ? st.log_tail.split('\n').pop() : '未知错误';
+          _showTrophy('❌', '更新失败', errMsg.length > 80 ? errMsg.slice(0, 80) + '…' : errMsg, 'error', 6000);
         }
-        // else still running, keep polling
-      } catch {
-        // keep polling
+        // else still running — keep polling
+      } catch (e) {
+        if (e.message === '401') {
+          clearInterval(poll);
+          btn.disabled = false;
+          btn.innerHTML = '<span class="vb-btn-icon">⬆</span> 立即更新';
+          _showTrophy('🔒', '会话过期', '请刷新页面并重新登录', 'error', 5000);
+          return;
+        }
+        // Network error — keep polling
       }
     }, 3000);
   } catch (e) {
-    btn.innerHTML = '<span class="vb-btn-icon">⬆</span> 更新';
     btn.disabled = false;
-    toast('启动更新失败', 'error');
+    btn.innerHTML = '<span class="vb-btn-icon">⬆</span> 立即更新';
+    _showTrophy('❌', '启动失败', '无法连接服务器', 'error', 4000);
   }
 }
 
@@ -3468,6 +3480,49 @@ window.delAcc = async (id) => {
 
 /* ─── Start ────────────────────────────────────────────────────────── */
 handleHash();  // initial load → auth check + navigate
+
+// ─── PS5 Trophy Container ─────────────────────────────────────────────────
+document.body.insertAdjacentHTML('beforeend', `
+  <div class="ps5-trophy" id="ps5-trophy">
+    <div class="ps5-trophy-icon" id="ps5-trophy-icon"></div>
+    <div class="ps5-trophy-title" id="ps5-trophy-title"></div>
+    <div class="ps5-trophy-sub" id="ps5-trophy-sub"></div>
+    <div class="ps5-trophy-progress"><div class="ps5-trophy-progress-bar" id="ps5-trophy-bar"></div></div>
+  </div>
+`);
+
+function _showTrophy(icon, title, sub, type = 'info', duration = 5000) {
+  const el = $('#ps5-trophy');
+  const iconEl = $('#ps5-trophy-icon');
+  const titleEl = $('#ps5-trophy-title');
+  const subEl = $('#ps5-trophy-sub');
+  const barEl = $('#ps5-trophy-bar');
+  if (!el) return;
+
+  el.setAttribute('data-type', type);
+  iconEl.textContent = icon;
+  titleEl.textContent = title;
+  subEl.innerHTML = sub || '';
+  barEl.style.transition = 'none';
+  barEl.style.width = '0%';
+
+  // Show
+  el.classList.remove('hide');
+  el.classList.add('show');
+
+  // Animate bar
+  requestAnimationFrame(() => {
+    barEl.style.transition = `width ${duration}ms linear`;
+    barEl.style.width = '100%';
+  });
+
+  // Auto-dismiss
+  setTimeout(() => {
+    el.classList.remove('show');
+    el.classList.add('hide');
+    setTimeout(() => el.classList.remove('hide'), 600);
+  }, duration);
+}
 
 </script>
 </body>

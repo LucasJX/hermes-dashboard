@@ -2440,20 +2440,38 @@ def api_version():
 
 
 _update_process = None
+_UPDATE_PID_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".update_pid")
+_UPDATE_DONE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".update_done")
+
 
 @app.route("/api/version/update", methods=["POST"])
 def api_version_update():
-    """Trigger `hermes update` in background."""
+    """后台触发 `hermes update`，完全脱离 Flask 进程生命周期"""
     global _update_process
-    if _update_process and _update_process.poll() is None:
-        return jsonify({"status": "running", "message": "更新正在进行中..."}), 409
+
+    # 检查是否已有 update 在跑（检查 PID 文件）
+    existing_pid = None
+    try:
+        if os.path.exists(_UPDATE_PID_FILE):
+            with open(_UPDATE_PID_FILE) as f:
+                existing_pid = int(f.read().strip())
+            # 检查进程是否还在
+            if existing_pid and os.path.exists(f"/proc/{existing_pid}"):
+                return jsonify({"status": "running", "message": "更新正在进行中..."}), 409
+    except (ValueError, FileNotFoundError, OSError):
+        existing_pid = None
 
     try:
-        _update_process = subprocess.Popen(
-            ["hermes", "update"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True
+        # 启动 hermes update，完全后台运行，写 PID 到文件
+        proc = subprocess.Popen(
+            ["hermes", "update", "--yes"],
+            stdout=open("/tmp/hermes_update.log", "w"),
+            stderr=subprocess.STDOUT,
+            start_new_session=True,  # 脱离终端，后台运行
         )
+        with open(_UPDATE_PID_FILE, "w") as f:
+            f.write(str(proc.pid))
+        _update_process = proc
         return jsonify({"status": "started", "message": "更新已启动"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -2461,22 +2479,47 @@ def api_version_update():
 
 @app.route("/api/version/update/status", methods=["GET"])
 def api_version_update_status():
-    """Check `hermes update` progress."""
+    """通过 PID 文件检测 update 是否完成，避免依赖 Flask 内存变量"""
     global _update_process
-    if _update_process is None:
-        return jsonify({"status": "idle"})
-    poll = _update_process.poll()
-    if poll is None:
+
+    pid = None
+    try:
+        if os.path.exists(_UPDATE_PID_FILE):
+            with open(_UPDATE_PID_FILE) as f:
+                pid = int(f.read().strip())
+    except (ValueError, FileNotFoundError, OSError):
+        pid = None
+
+    # PID 存在且进程还在跑
+    if pid and os.path.exists(f"/proc/{pid}"):
         return jsonify({"status": "running"})
+
+    # 进程已结束 → 读日志，清理文件
     stdout = ""
     try:
-        stdout = _update_process.stdout.read() if _update_process.stdout else ""
-    except Exception:
+        with open("/tmp/hermes_update.log") as f:
+            stdout = f.read()
+    except FileNotFoundError:
         pass
-    # Clear cache so next version check fetches fresh data
+
+    # 清理 PID 文件
+    for f in [_UPDATE_PID_FILE, _UPDATE_DONE_FILE]:
+        try:
+            os.remove(f)
+        except FileNotFoundError:
+            pass
+
+    # 清除版本缓存，下次请求会重新检测
     _VERSION_CACHE["data"] = None
     _VERSION_CACHE["ts"] = 0
-    return jsonify({"status": "done" if poll == 0 else "error", "exit_code": poll, "output": stdout[-2000:]})
+
+    # 判断是否成功：gateway 版本变了即为成功
+    new_ver = _get_local_version()
+    return jsonify({
+        "status": "done",
+        "local_version": new_ver,
+        "log_tail": stdout[-2000:] if stdout else ""
+    })
 
 
 @app.route("/api/version/translate", methods=["POST"])

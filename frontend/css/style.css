@@ -1641,6 +1641,92 @@ ul { list-style: none; }
   transition: opacity 0.3s, transform 0.3s;
 }
 
+/* ─── PS5-Style Trophy Notification ─────────────────────────────────────────── */
+.ps5-trophy {
+  position: fixed;
+  top: 50%;
+  left: 0;
+  transform: translateX(calc(100vw + 320px)) translateY(-50%);
+  background: rgba(20, 20, 25, 0.93);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 14px;
+  padding: 14px 18px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04) inset;
+  z-index: 9999;
+  pointer-events: none;
+  min-width: 260px;
+  max-width: 300px;
+  opacity: 0;
+  transition: transform 0.55s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s ease;
+}
+.ps5-trophy.show {
+  transform: translateX(-20px) translateY(-50%);
+  opacity: 1;
+}
+.ps5-trophy.hide {
+  transform: translateX(calc(100vw + 320px)) translateY(-50%);
+  opacity: 0;
+}
+.ps5-trophy-icon {
+  font-size: 36px;
+  line-height: 1;
+  align-self: center;
+  margin-bottom: 2px;
+}
+.ps5-trophy-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: 0.5px;
+  text-shadow: 0 1px 6px rgba(0,0,0,0.6);
+  text-align: center;
+  width: 100%;
+}
+.ps5-trophy-sub {
+  font-size: 11px;
+  color: rgba(255,255,255,0.5);
+  font-weight: 400;
+  text-align: center;
+  width: 100%;
+  line-height: 1.5;
+}
+.ps5-trophy-sub code {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  background: rgba(255,255,255,0.08);
+  padding: 1px 5px;
+  border-radius: 4px;
+  color: rgba(255,255,255,0.7);
+}
+
+/* Bottom progress bar */
+.ps5-trophy-progress {
+  position: absolute;
+  bottom: 0; left: 12px; right: 12px;
+  height: 3px;
+  background: rgba(255,255,255,0.12);
+  border-radius: 0 0 10px 10px;
+  overflow: hidden;
+}
+.ps5-trophy-progress-bar {
+  height: 100%;
+  width: 0%;
+  border-radius: 0 0 10px 10px;
+  transition: width linear;
+}
+.ps5-trophy[data-type="success"] { border-color: rgba(0,210,100,0.3); }
+.ps5-trophy[data-type="success"] .ps5-trophy-progress-bar { background: linear-gradient(90deg, rgba(0,210,100,0.8), rgba(0,255,130,0.9)); }
+.ps5-trophy[data-type="error"] { border-color: rgba(255,60,60,0.3); }
+.ps5-trophy[data-type="error"] .ps5-trophy-progress-bar { background: linear-gradient(90deg, rgba(255,80,80,0.8), rgba(255,120,120,0.9)); }
+.ps5-trophy[data-type="info"] { border-color: rgba(0,160,255,0.3); }
+.ps5-trophy[data-type="info"] .ps5-trophy-progress-bar { background: linear-gradient(90deg, rgba(0,160,255,0.8), rgba(80,200,255,0.9)); }
+
 /* ─── Gateway Restart Toast ──────────────────────────────────────────────── */
 @keyframes fadeInUp {
   from { opacity: 0; transform: translateX(-50%) translateY(12px); }
