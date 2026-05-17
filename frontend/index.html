@@ -52,8 +52,12 @@
 
   <div class="topdock-divider"></div>
 
-  <!-- Right: Theme toggle + Avatar -->
+  <!-- Right: Notifications + Theme toggle + Avatar -->
   <div class="topdock-right" role="group" aria-label="控制">
+    <div class="topdock-notif" id="notif-btn" title="通知中心" role="button" aria-label="通知中心" tabindex="0">
+      <span aria-hidden="true">🔔</span>
+      <span class="notif-badge" id="notif-badge" style="display:none;"></span>
+    </div>
     <div class="topdock-theme" id="theme-toggle" title="切换主题" role="button" aria-label="切换主题" tabindex="0">
       <span aria-hidden="true">☀️</span>
     </div>
@@ -125,8 +129,18 @@
 
 <!-- ─── Main Content ─────────────────────────────────────────────── -->
 <main class="page" id="app">
-  <div class="loading"><div class="pacman"></div><div class="pacman-dots"><span class="pacman-dot"></span><span class="pacman-dot"></span><span class="pacman-dot"></span></div>加载中…</div>
+  <div class="loading"><div class="apple-loader"><span></span><span></span><span></span></div></div>
 </main>
+
+<!-- Dashboard Changelog Modal (always in DOM, outside #app) -->
+<div class="dc-backdrop" id="dc-backdrop" onclick="_closeDashChangelog()"></div>
+<div class="dc-modal" id="dc-modal">
+  <div class="dc-header">
+    <div class="dc-title">🦞 Dashboard 更新日志</div>
+    <div class="dc-close" onclick="_closeDashChangelog()">✕</div>
+  </div>
+  <div class="dc-body" id="dc-body"></div>
+</div>
 
 </div><!-- .app-shell -->
 
@@ -412,35 +426,20 @@ async function renderDashboard() {
   const dashboardHTML = `
       <!-- Version Banner -->
       <div class="version-banner" id="version-banner">
-        <div class="vb-main">
-          <div class="vb-left">
-            <div class="vb-accent"></div>
-            <div class="vb-logo-block" onclick="_showDashChangelog()" title="查看 Dashboard 更新日志" style="cursor:pointer">
-              <div class="vb-logo">🦞</div>
-            </div>
-            <div class="vb-info">
-              <div class="vb-title">Hermes Agent</div>
-            </div>
+        <div class="vb-brand">
+          <div class="vb-logo-block" onclick="_showDashChangelog()" title="查看 Dashboard 更新日志">
+            <div class="vb-logo">🦞</div>
           </div>
-          <div class="vb-right">
-            <span class="vb-version-badge" id="vb-local-ver">v—</span>
-            <span class="vb-sub" id="vb-sub">检查版本中…</span>
-          </div>
+          <span class="vb-title">Hermes Agent</span>
         </div>
-        <div class="vb-divider"></div>
+        <div class="vb-center">
+          <span class="vb-version-pill" id="vb-local-ver">v—</span>
+          <span class="vb-status-pill" id="vb-status-pill">检查中…</span>
+        </div>
         <div class="vb-actions" id="vb-actions"></div>
       </div>
       <!-- Agent Changelog Panel (inline, hidden by default) -->
       <div class="changelog-panel" id="changelog-panel"></div>
-      <!-- Dashboard Changelog Modal (hidden by default) -->
-      <div class="dc-backdrop" id="dc-backdrop" onclick="_closeDashChangelog()"></div>
-      <div class="dc-modal" id="dc-modal">
-        <div class="dc-header">
-          <div class="dc-title">🦞 Dashboard 更新日志</div>
-          <div class="dc-close" onclick="_closeDashChangelog()">✕</div>
-        </div>
-        <div class="dc-body" id="dc-body"></div>
-      </div>
 
       <div class="hero-grid">
         <div class="hero-card">
@@ -959,7 +958,7 @@ function _setCachedChangelog(version, data) {
 async function _checkVersion() {
   const el = {
     local: $('#vb-local-ver'),
-    sub: $('#vb-sub'),
+    sub: $('#vb-status-pill'),
     actions: $('#vb-actions'),
   };
   if (!el.local) return;
@@ -969,12 +968,16 @@ async function _checkVersion() {
     if (!data) return;
     _versionData = data;
     el.local.textContent = 'v' + (data.local_version || '—');
+    el.sub.className = 'vb-status-pill'; // reset
     if (data.update_available) {
-      el.sub.innerHTML = `<span class="vb-status-text vb-status-update">⬆ 有新版本 v${escapeHtml(data.latest_version)}</span>`;
+      el.sub.textContent = '⬆ 有新版本 v' + (data.latest_version || '');
+      el.sub.classList.add('vb-status-update');
     } else if (data.latest_version) {
-      el.sub.innerHTML = `<span class="vb-status-text vb-status-latest">✓ 已是最新</span>`;
+      el.sub.textContent = '✓ 已是最新';
+      el.sub.classList.add('vb-status-latest');
     } else {
-      el.sub.textContent = '无法获取最新版本';
+      el.sub.textContent = '无法获取';
+      el.sub.classList.add('vb-status-checking');
     }
     if (data.latest_version && data.changelog && Object.keys(data.changelog).length) {
       _setCachedChangelog(data.latest_version, data.changelog);
@@ -1046,8 +1049,13 @@ const DASH_CL_KEY = 'hermes_dash_cl';
 const DASH_CL_TTL = 3600 * 1000;
 
 // Hardcoded dashboard changelog — update this when releasing new dashboard versions
-const DASH_CL_VERSION = '2.16.0';
+const DASH_CL_VERSION = '2.17.0';
 const DASH_CL_DATA = [
+  { version: '2.17.0', date: '2026-05-17', changes: [
+    { cat: '✨ 新功能', items: ['Apple 风格三色脉冲点加载动画（替代吃豆人）'] },
+    { cat: '🔧 优化', items: ['移除加载遮罩 backdrop-filter blur，loader 清晰显示', '加载动画去除"加载中…"文字，只保留脉冲点'] },
+    { cat: '🐛 修复', items: ['手机版（≤480px）页面下移归零，topdock 隐藏，mobile-dock 不遮挡内容'] },
+  ] },
   { version: '2.16.0', date: '2026-05-15', changes: [
     { cat: '🔧 优化', items: ['配额页本月趋势图全新设计：双独立面板（输入/输出各自有独立坐标轴），边到边布局，Y轴3标签（最大/中点/0）+ 虚线网格'] },
     { cat: '🐛 修复', items: ['趋势图 Tooltip 失效问题（SVG transparent rect 不捕获鼠标事件，改为 addEventListener 绑定）', '缓存分析卡片移动端4列被硬编码样式遮挡'] },
@@ -1112,16 +1120,18 @@ function _showDashChangelog() {
   }
   body.innerHTML = html;
 
-  // Show modal with animation
-  modal.classList.add('open');
-  backdrop.classList.add('open');
-  document.body.style.overflow = 'hidden';
+  // Use rAF to open in the next frame — avoids flash from synchronous DOM + layout
+  requestAnimationFrame(() => {
+    modal.classList.add('open');
+    backdrop.classList.add('open');
+    document.body.style.overflow = 'hidden';
 
-  // Animate items in (staggered)
-  const items = body.querySelectorAll('.dc-item');
-  items.forEach((item, i) => {
-    item.style.animationDelay = (i * 40) + 'ms';
-    item.classList.add('dc-item-in');
+    // Animate items in (staggered)
+    const items = body.querySelectorAll('.dc-item');
+    items.forEach((item, i) => {
+      item.style.animationDelay = (i * 40) + 'ms';
+      item.classList.add('dc-item-in');
+    });
   });
 }
 
@@ -1285,8 +1295,8 @@ async function _doUpdate() {
   btn.disabled = true;
   btn.innerHTML = '<span class="vb-btn-icon">⏳</span> 更新中…';
 
-  // Show PS5-style trophy: "正在更新…"
-  _showTrophy('⏳', '正在更新 Hermes Agent', '更新完成后将自动刷新页面', 'info', 30000);
+  // Show update start notification
+  notifyEvent('agent_update_found', { version: '' }, { duration: 30000 });
 
   try {
     await fetch(API + '/version/update', {
@@ -1301,16 +1311,14 @@ async function _doUpdate() {
         if (st.status === 'done') {
           clearInterval(poll);
           btn.innerHTML = '<span class="vb-btn-icon">✅</span> 更新完成';
-          // PS5 trophy: success
-          _showTrophy('🏆', '更新成功', `Hermes Agent <code>${st.local_version || ''}</code> 已就绪，页面即将刷新…`, 'success', 3000);
-          // Auto-reload after 3s
+          notifyEvent('agent_update_success', { version: st.local_version || '' }, { duration: 3000 });
           setTimeout(() => location.reload(), 3000);
         } else if (st.status === 'error') {
           clearInterval(poll);
           btn.disabled = false;
           btn.innerHTML = '<span class="vb-btn-icon">⬆</span> 立即更新';
           const errMsg = st.log_tail ? st.log_tail.split('\n').pop() : '未知错误';
-          _showTrophy('❌', '更新失败', errMsg.length > 80 ? errMsg.slice(0, 80) + '…' : errMsg, 'error', 6000);
+          notifyEvent('agent_update_failed', {}, { sub: errMsg.length > 80 ? errMsg.slice(0, 80) + '…' : errMsg, duration: 6000 });
         }
         // else still running — keep polling
       } catch (e) {
@@ -1318,7 +1326,7 @@ async function _doUpdate() {
           clearInterval(poll);
           btn.disabled = false;
           btn.innerHTML = '<span class="vb-btn-icon">⬆</span> 立即更新';
-          _showTrophy('🔒', '会话过期', '请刷新页面并重新登录', 'error', 5000);
+          notifyEvent('session_expired', {}, { duration: 5000 });
           return;
         }
         // Network error — keep polling
@@ -1327,7 +1335,7 @@ async function _doUpdate() {
   } catch (e) {
     btn.disabled = false;
     btn.innerHTML = '<span class="vb-btn-icon">⬆</span> 立即更新';
-    _showTrophy('❌', '启动失败', '无法连接服务器', 'error', 4000);
+    notifyEvent('agent_update_failed', {}, { sub: '无法连接服务器', duration: 4000 });
   }
 }
 
@@ -2232,10 +2240,21 @@ function renderCronList(jobs) {
           if (action === 'delete') {
             if (!confirm('确认删除此任务？')) return;
             const r = await fetch(`${API}/cron/${id}`, { method: 'DELETE', headers: authHeaders() }).then(r => r.json());
-            if (r.ok) { toast('已删除', 'success'); renderCron(); } else toast('删除失败: ' + (r.error || ''), 'error');
+            const jobName = card.querySelector('.cron-name')?.textContent || id;
+            if (r.ok) {
+              toast('已删除', 'success');
+              notifyEvent('cron_deleted', { name: jobName });
+              renderCron();
+            } else toast('删除失败: ' + (r.error || ''), 'error');
           } else {
             const r = await fetch(`${API}/cron/${id}/${action}`, { method: 'POST', headers: authHeaders() }).then(r => r.json());
-            if (r.ok) { toast(action === 'pause' ? '已暂停' : action === 'resume' ? '已恢复' : '已触发', 'success'); renderCron(); }
+            const jobName = card.querySelector('.cron-name')?.textContent || id;
+            if (r.ok) {
+              const eventMap = { pause: 'cron_paused', resume: 'cron_resumed', run: 'cron_triggered' };
+              toast(action === 'pause' ? '已暂停' : action === 'resume' ? '已恢复' : '已触发', 'success');
+              if (eventMap[action]) notifyEvent(eventMap[action], { name: jobName });
+              renderCron();
+            }
             else toast('操作失败: ' + (r.error || ''), 'error');
           }
         } catch (e) { toast(e.message, 'error'); }
@@ -2579,9 +2598,11 @@ async function renderModels() {
         window.dispatchEvent(new CustomEvent('model-changed', { detail: { provider: selectedProv, model } }));
         // Gateway restart notification
         if (res.gateway_reloaded) {
+          notifyEvent('model_switch_success', { model });
           showGatewayRestartToast();
         } else {
           toast('模型已切换: ' + model, 'success');
+          notifyEvent('model_switch_success', { model });
         }
         // Refresh the page after short delay
         setTimeout(() => renderModels(), 1200);
@@ -3216,7 +3237,12 @@ function showModal(type, extra) {
         if (prompt) body.prompt = prompt;
         if (deliver) body.deliver = deliver;
         const r = await fetch('/api/cron', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
-        if (r.ok) { toast('任务已创建', 'success'); overlay.remove(); renderCron(); }
+        if (r.ok) {
+          toast('任务已创建', 'success');
+          notifyEvent('cron_created', { name: name || '新任务', schedule: schedule });
+          overlay.remove();
+          renderCron();
+        }
         else toast('创建失败: ' + (r.error || ''), 'error');
       } catch (e) { toast(e.message, 'error'); }
     });
@@ -3278,6 +3304,7 @@ window.addEventListener('pageshow', e => {
 async function initAuth() {
   applyTheme(getPreferredTheme());
   $('#theme-toggle').addEventListener('click', toggleTheme);
+  $('#notif-btn').addEventListener('click', () => showNotificationCenter());
   try {
     const sess = await fetch(API + '/auth/session', { headers: authHeaders(), credentials: 'include' }).then(r => r.json());
     if (sess.logged_in) {
@@ -3305,8 +3332,18 @@ async function doLogin() {
       body: JSON.stringify({ username: u, password: p })
     }).then(r => r.json());
     if (res.ok) {
-      setToken(res.token || '');  // store token in localStorage
+      setToken(res.token || '');
       showApp(res);
+      // Show login trophy: daily first login or welcome back
+      if (res.is_first_today) {
+        setTimeout(() => {
+          notifyEvent('daily_first_login', { username: u, date: new Date().toLocaleDateString('zh-CN') });
+        }, 400);
+      } else {
+        setTimeout(() => {
+          notifyEvent('login_success', { username: u });
+        }, 400);
+      }
     } else {
       err.textContent = res.error || '登录失败';
       err.style.display = 'block';
@@ -3318,16 +3355,19 @@ async function doLogin() {
 }
 
 async function doLogout() {
+  const uname = currentUser ? currentUser.username : '?';
   await fetch(API + '/auth/logout', { method: 'POST', headers: authHeaders(), credentials: 'include' });
-  setToken('');  // clear localStorage token
-  sessionStorage.removeItem('hermes-page');  // clear stale page state
+  setToken('');
+  sessionStorage.removeItem('hermes-page');
   currentUser = null;
   showLogin();
+  setTimeout(() => notifyEvent('logout', { username: uname }), 300);
 }
 
 /* ─── Show login form ─────────────────────────────────────────────────── */
 function showLogin() {
   setToken('');
+  $('.topdock-wrap').style.display = 'none';
   $('#login-overlay').style.display = 'flex';
   $('#app').innerHTML = '';
   $('#li-username').value = '';
@@ -3340,6 +3380,7 @@ function showLogin() {
 /* ─── Post-login: show main UI ─────────────────────────────────────────── */
 function showApp(res) {
   currentUser = { user_id: res.user_id, username: res.username, is_admin: res.is_admin };
+  $('.topdock-wrap').style.display = '';
   $('#login-overlay').style.display = 'none';
   // After login, go to dashboard (fresh login = start at home)
   const target = 'dashboard';
@@ -3349,6 +3390,8 @@ function showApp(res) {
   const dk = $(`.dk[data-page="${target}"]`);
   if (dk) dk.classList.add('active');
   navigate(target);
+  // Initialize notification badge
+  fetchUnreadCount();
 }
 
 /* ─── Avatar Dropdown Menu ──────────────────────────────── */
@@ -3477,6 +3520,217 @@ window.delAcc = async (id) => {
   }).then(r => r.json()).catch(() => ({ error: '网络错误' }));
   if (res.error) toast(res.error); else { toast('已删除'); renderAccount(); }
 };
+
+/* ─── Notification Event Library ─────────────────────────────────────────────── */
+
+const EVENT_DEFS = {
+  // Session
+  login_success:      { icon: '🟢', title: '欢迎回来',     sub: '{username} · 已登录',                type: 'success', duration: 4000 },
+  daily_first_login:  { icon: '🌅', title: '早安，{username}', sub: '今日首次登录 · {date}',          type: 'success', duration: 5000 },
+  login_failed:       { icon: '🔴', title: '登录失败',     sub: '用户名或密码错误',                    type: 'error',   duration: 5000 },
+  session_expired:    { icon: '🔒', title: '会话已过期',   sub: '请刷新页面重新登录',                  type: 'error',   duration: 5000 },
+  logout:             { icon: '🔵', title: '已退出登录',    sub: '{username} · 下次见！',                type: 'info',    duration: 3000 },
+
+  // Model
+  model_switch_success:{ icon: '🤖', title: '模型已切换',  sub: '{model} · Gateway 重启中',            type: 'success', duration: 4000 },
+  model_switch_failed: { icon: '⚠️', title: '切换失败',    sub: 'API 请求失败，请检查配置',             type: 'error',   duration: 5000 },
+  model_quota_warning: { icon: '⚡', title: '配额告警',    sub: '剩余 {pct}% · 请关注用量',             type: 'warning', duration: 7000 },
+
+  // System
+  gateway_restarting:  { icon: '🔄', title: 'Gateway 重启中', sub: '配置已更新，稍后恢复服务',           type: 'info',    duration: 4000 },
+  gateway_restart_fail:{ icon: '🔴', title: 'Gateway 重启失败', sub: '请手动检查进程状态',              type: 'error',   duration: 6000 },
+  health_check_fail:   { icon: '🔴', title: '健康检查失败', sub: '服务响应异常，请检查日志',            type: 'error',   duration: 6000 },
+  disk_warning:        { icon: '⚠️', title: '磁盘告警',     sub: '使用率 {pct}% · 请及时清理',           type: 'warning', duration: 7000 },
+
+  // Cron
+  cron_created:        { icon: '✅', title: '任务已创建',   sub: '「{name}」· {schedule}',               type: 'success', duration: 4000 },
+  cron_deleted:        { icon: '🗑️', title: '任务已删除',   sub: '「{name}」已从系统中移除',              type: 'info',    duration: 3000 },
+  cron_paused:        { icon: '⏸', title: '任务已暂停',   sub: '「{name}」已暂停执行',                 type: 'info',    duration: 3000 },
+  cron_resumed:        { icon: '▶️', title: '任务已恢复',   sub: '「{name}」恢复执行',                   type: 'info',    duration: 3000 },
+  cron_triggered:      { icon: '🚀', title: '任务已触发',   sub: '「{name}」正在执行…',                  type: 'info',    duration: 5000 },
+  cron_complete:       { icon: '✅', title: '任务已完成',   sub: '「{name}」· 用时 {duration}',          type: 'success', duration: 4000 },
+  cron_failed:         { icon: '❌', title: '任务执行失败', sub: '「{name}」· 请查看日志',              type: 'error',   duration: 6000 },
+  cron_overdue:        { icon: '⏳', title: '任务积压',    sub: '「{name}」超过 {hours}h 未执行',         type: 'warning', duration: 7000 },
+
+  // Sync
+  sync_complete:       { icon: '🧠', title: '记忆同步完成', sub: '本次同步 {count} 条 · 累计 {total} 条', type: 'success', duration: 5000 },
+  sync_failed:         { icon: '❌', title: '同步失败',    sub: '连接超时，请检查网络',                   type: 'error',   duration: 5000 },
+  backup_complete:     { icon: '💾', title: '备份完成',    sub: '已备份至 {path}',                       type: 'success', duration: 4000 },
+  backup_failed:       { icon: '🔴', title: '备份失败',    sub: '磁盘空间可能不足',                       type: 'error',   duration: 5000 },
+
+  // Agent
+  agent_update_found:  { icon: '🆕', title: '发现新版本',   sub: '{version} 可用 · 正在更新…',           type: 'info',    duration: 5000 },
+  agent_update_success:{ icon: '🏆', title: '更新成功',    sub: 'Hermes Agent {version} 已就绪',         type: 'success', duration: 3000 },
+  agent_update_failed: { icon: '❌', title: '更新失败',    sub: '下载超时，请稍后重试',                   type: 'error',   duration: 6000 },
+
+  // Integration
+  telegram_connected:  { icon: '📱', title: 'Telegram 已连接', sub: '正在接收消息…',                   type: 'success', duration: 4000 },
+  telegram_disconnected:{ icon: '📵', title: 'Telegram 连接断开', sub: '请检查 Bot Token 配置',          type: 'error',   duration: 6000 },
+  wechat_connected:    { icon: '💬', title: 'WeChat 已连接', sub: '正在接收消息…',                       type: 'success', duration: 4000 },
+  wechat_disconnected: { icon: '📵', title: 'WeChat 连接断开', sub: '请检查企业微信配置',               type: 'error',   duration: 6000 },
+  github_sync_complete:{ icon: '🔗', title: 'GitHub 同步完成', sub: '已拉取最新代码',                   type: 'success', duration: 4000 },
+
+  // Skill
+  skill_installed:     { icon: '🧩', title: 'Skill 已安装', sub: '{name} · {desc}',                    type: 'success', duration: 4000 },
+  skill_removed:       { icon: '🗑️', title: 'Skill 已移除', sub: '{name} 已从系统中移除',              type: 'info',    duration: 3000 },
+
+  // Alert
+  security_alert:       { icon: '🛡️', title: '安全告警',   sub: '{msg}',                               type: 'error',   duration: 7000 },
+};
+
+/**
+ * Show PS5 trophy notification + record to backend DB.
+ * @param {string} eventType - key from EVENT_DEFS
+ * @param {object} vars - template variable substitutions
+ * @param {object} opts - override: {icon, title, sub, type, duration}
+ */
+async function notifyEvent(eventType, vars = {}, opts = {}) {
+  const def = EVENT_DEFS[eventType] || { icon: 'ℹ️', title: eventType, sub: '', type: 'info', duration: 4000 };
+
+  const icon   = opts.icon   || def.icon;
+  const type   = opts.type   || def.type;
+  const duration = opts.duration !== undefined ? opts.duration : def.duration;
+
+  // Template substitution
+  const tpl = (str) => str.replace(/\{(\w+)\}/g, (_, k) => vars[k] !== undefined ? vars[k] : `{${k}}`);
+  const title = tpl(opts.title || def.title);
+  const sub   = tpl(opts.sub   || def.sub);
+
+  // Show PS5 trophy
+  _showTrophy(icon, title, sub, type, duration);
+
+  // Record to backend DB (non-blocking)
+  try {
+    await fetch(API + '/events', {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: eventType, icon, title, sub, notif_type: type })
+    });
+  } catch (_) {}
+
+  // Update notification badge
+  fetchUnreadCount();
+}
+
+/**
+ * Update the notification bell badge (unread count).
+ */
+async function fetchUnreadCount() {
+  try {
+    const r = await fetch(API + '/events/unread-count', { headers: authHeaders() });
+    if (!r.ok) return;
+    const { unread } = await r.json();
+    const badge = $('#notif-badge');
+    if (!badge) return;
+    badge.textContent = unread > 0 ? (unread > 99 ? '99+' : unread) : '';
+    badge.style.display = unread > 0 ? 'flex' : 'none';
+  } catch (_) {}
+}
+
+/**
+ * Open notification center overlay.
+ */
+async function showNotificationCenter() {
+  // Guard: prevent multiple simultaneous opens
+  if ($('#notif-overlay')) return;
+
+  try {
+    const r = await fetch(API + '/events?limit=50', { headers: authHeaders() });
+    if (!r.ok) return;
+    const { events, unread } = await r.json();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.id = 'notif-overlay';
+
+    const rows = events.map(ev => {
+      const time = _formatEventTime(ev.created_at);
+      return `<div class="notif-row${ev.read ? '' : ' notif-unread'}" data-id="${ev.id}">
+        <span class="notif-row-icon">${ev.icon}</span>
+        <div class="notif-row-body">
+          <div class="notif-row-title">${escHtml(ev.title)}</div>
+          <div class="notif-row-sub">${escHtml(ev.sub)}</div>
+          <div class="notif-row-time">${time}</div>
+        </div>
+        <div class="notif-row-type notif-dot-${ev.notif_type}"></div>
+      </div>`;
+    }).join('');
+
+    overlay.innerHTML = `
+      <div class="notif-panel">
+        <div class="notif-header">
+          <span>通知中心</span>
+          <div style="display:flex;gap:8px;align-items:center;">
+            ${unread > 0 ? `<button class="btn btn-ghost" id="notif-read-all">全部已读</button>` : ''}
+            ${events && events.length > 0 ? `<button class="btn btn-ghost" id="notif-clear-all" style="color:var(--red-1);">清空</button>` : ''}
+            <button class="btn btn-ghost notif-x-btn" id="notif-close-btn">✕</button>
+          </div>
+        </div>
+        <div class="notif-list">${rows || '<div style="text-align:center;color:var(--ink-3);padding:40px 0;font-size:14px;">暂无通知</div>'}</div>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    // Event delegation on overlay for close and read-all
+    overlay.addEventListener('click', async e => {
+      const target = e.target;
+
+      // Close button or backdrop click
+      if (target.id === 'notif-close-btn' || target === overlay) {
+        overlay.remove();
+        return;
+      }
+
+      // Read all
+      if (target.id === 'notif-read-all') {
+        await fetch(API + '/events/read-all', { method: 'PUT', headers: authHeaders() });
+        document.querySelectorAll('.notif-row').forEach(r => r.classList.remove('notif-unread'));
+        fetchUnreadCount();
+        target.remove();
+        return;
+      }
+
+      // Clear all
+      if (target.id === 'notif-clear-all') {
+        await fetch(API + '/events/clear-all', { method: 'DELETE', headers: authHeaders() });
+        document.querySelectorAll('.notif-row').forEach(r => r.remove());
+        fetchUnreadCount();
+        const emptyMsg = '<div style="text-align:center;color:var(--ink-3);padding:40px 0;font-size:14px;">暂无通知</div>';
+        overlay.querySelector('.notif-list').innerHTML = emptyMsg;
+        target.remove();
+        document.getElementById('notif-read-all')?.remove();
+        return;
+      }
+
+      // Individual row click → mark read
+      const row = target.closest('.notif-row');
+      if (row && row.classList.contains('notif-unread')) {
+        const id = row.dataset.id;
+        row.classList.remove('notif-unread');
+        await fetch(API + '/events/' + id + '/read', { method: 'PUT', headers: authHeaders() });
+        fetchUnreadCount();
+      }
+    });
+  } catch (e) {
+    console.error('Notification center error:', e);
+  }
+}
+
+function _formatEventTime(ts) {
+  // ts format: "YYYY-MM-DD HH:MM:SS"
+  const d = new Date(ts.replace(' ', 'T') + ':00');
+  const now = new Date();
+  const diff = now - d;
+  const m = Math.floor(diff / 60000);
+  const h = Math.floor(diff / 3600000);
+  const day = Math.floor(diff / 86400000);
+  if (m < 1) return '刚刚';
+  if (m < 60) return m + '分钟前';
+  if (h < 24) return h + '小时前';
+  if (day < 7) return day + '天前';
+  return ts.slice(5, 10); // MM-DD
+}
 
 /* ─── Start ────────────────────────────────────────────────────────── */
 handleHash();  // initial load → auth check + navigate

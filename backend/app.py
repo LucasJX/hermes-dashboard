@@ -46,6 +46,12 @@ CORS(app, supports_credentials=True)
 # ─── Auth ────────────────────────────────────────────────────────────────────
 ACCOUNTS_DB_PATH = os.path.join(HERMES_HOME, "dashboard_auth.db")
 
+# ─── Events ──────────────────────────────────────────────────────────────────
+EVENTS_DB_PATH = os.path.join(HERMES_HOME, "dashboard_events.db")
+
+# In-memory last login date per user for "daily first login" detection
+_LAST_LOGIN_DATE = {}   # {user_id: "YYYY-MM-DD"}
+
 # In-memory brute-force protection: {ip: [(ts, ok), ...]}
 BRUTE_FORCE = {}   # noqa: F811
 MAX_ATTEMPTS = 5
@@ -82,6 +88,39 @@ def check_brute(ip):
     BRUTE_FORCE[ip] = window
     failures = sum(1 for ts, ok in window if not ok)
     return failures >= MAX_ATTEMPTS
+
+# ─── Events ──────────────────────────────────────────────────────────────────
+
+def init_events_db():
+    """Create events table if not exists."""
+    with sqlite3.connect(EVENTS_DB_PATH) as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                type       TEXT    NOT NULL,
+                icon       TEXT    NOT NULL DEFAULT '',
+                title      TEXT    NOT NULL,
+                sub        TEXT    NOT NULL DEFAULT '',
+                notif_type TEXT    NOT NULL DEFAULT 'info',
+                read_      INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+            )
+        """)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_events_read ON events(read_ ASC, created_at DESC)")
+        db.commit()
+
+def record_event(event_type, icon, title, sub, notif_type="info"):
+    """Insert an event into the DB. Silently skips on failure."""
+    try:
+        with sqlite3.connect(EVENTS_DB_PATH) as db:
+            db.execute(
+                "INSERT INTO events (type, icon, title, sub, notif_type) VALUES (?, ?, ?, ?, ?)",
+                (event_type, icon, title, sub, notif_type)
+            )
+            db.commit()
+    except Exception:
+        pass
 
 def record_attempt(ip, ok):
     """Log a login attempt."""
@@ -2696,6 +2735,13 @@ def api_login():
 
     if not row or not check_password_hash(row[2], password):
         record_attempt(ip, False)
+        record_event(
+            "login_failed",
+            "🔴",
+            f"登录失败",
+            f"用户名或密码错误",
+            "error"
+        )
         return jsonify({"error": "用户名或密码错误"}), 401
 
     record_attempt(ip, True)
@@ -2705,18 +2751,50 @@ def api_login():
     session.permanent = True
     app.permanent_session_lifetime = timedelta(days=7)
     token = create_token(row[0], row[1], row[3])
+
+    # Check daily first login
+    today = datetime.now(UTC8).strftime("%Y-%m-%d")
+    prev = _LAST_LOGIN_DATE.get(row[0])
+    is_first_today = prev != today
+    if is_first_today:
+        _LAST_LOGIN_DATE[row[0]] = today
+        record_event(
+            "daily_first_login",
+            "🌅",
+            f"早安，{row[1]}",
+            f"今日首次登录 · {datetime.now(UTC8).strftime('%Y/%m/%d')}",
+            "success"
+        )
+    else:
+        record_event(
+            "login_success",
+            "🟢",
+            f"欢迎回来",
+            f"{row[1]} · 已登录",
+            "success"
+        )
+
     return jsonify({
         "ok": True,
         "user_id": row[0],
         "username": row[1],
         "is_admin": bool(row[3]),
-        "token": token
+        "token": token,
+        "is_first_today": is_first_today
     })
 
 
 @app.route("/api/auth/logout", methods=["POST"])
 def api_logout():
+    username = session.get("username", "?")
     session.clear()
+    record_event(
+        "logout",
+        "🔵",
+        f"已退出登录",
+        f"{username} · 下次见！",
+        "info"
+    )
     return jsonify({"ok": True})
 
 
@@ -2820,11 +2898,127 @@ def api_accounts_password():
     return jsonify({"ok": True})
 
 
+# ─── Events API ─────────────────────────────────────────────────────────────────
+
+@app.route("/api/events", methods=["GET"])
+def api_events_list():
+    """List events, most recent first. Supports ?type=filter&limit=20&offset=0."""
+    etype = request.args.get("type")
+    limit = min(int(request.args.get("limit", 30)), 100)
+    offset = int(request.args.get("offset", 0))
+    unread_only = request.args.get("unread_only") == "1"
+
+    where = "WHERE 1=1"
+    params = []
+    if etype:
+        where += " AND type = ?"
+        params.append(etype)
+    if unread_only:
+        where += " AND read_ = 0"
+
+    with sqlite3.connect(EVENTS_DB_PATH) as db:
+        rows = db.execute(
+            f"SELECT id, type, icon, title, sub, notif_type, read_, created_at "
+            f"FROM events {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (*params, limit, offset)
+        ).fetchall()
+        total = db.execute(
+            f"SELECT COUNT(*) FROM events {where}", tuple(params)
+        ).fetchone()[0]
+        unread = db.execute(
+            "SELECT COUNT(*) FROM events WHERE read_ = 0"
+        ).fetchone()[0]
+
+    return jsonify({
+        "events": [
+            {"id": r[0], "type": r[1], "icon": r[2], "title": r[3], "sub": r[4],
+             "notif_type": r[5], "read": bool(r[6]), "created_at": r[7]}
+            for r in rows
+        ],
+        "total": total,
+        "unread": unread
+    })
+
+
+@app.route("/api/events/<int:event_id>/read", methods=["PUT"])
+def api_events_read(event_id):
+    """Mark a single event as read."""
+    with sqlite3.connect(EVENTS_DB_PATH) as db:
+        db.execute("UPDATE events SET read_ = 1 WHERE id = ?", (event_id,))
+        db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/events/read-all", methods=["PUT"])
+def api_events_read_all():
+    """Mark all events as read."""
+    with sqlite3.connect(EVENTS_DB_PATH) as db:
+        db.execute("UPDATE events SET read_ = 1 WHERE read_ = 0")
+        db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/events/clear-all", methods=["DELETE"])
+def api_events_clear_all():
+    """Delete all events."""
+    with sqlite3.connect(EVENTS_DB_PATH) as db:
+        db.execute("DELETE FROM events")
+        db.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/events/unread-count", methods=["GET"])
+def api_events_unread_count():
+    """Return unread event count."""
+    with sqlite3.connect(EVENTS_DB_PATH) as db:
+        row = db.execute("SELECT COUNT(*) FROM events WHERE read_ = 0").fetchone()
+    return jsonify({"unread": row[0]})
+
+
+@app.route("/api/events", methods=["POST"])
+def api_events_create():
+    """Record a new event (usually called internally, but also available to frontend)."""
+    data = request.get_json() or {}
+    event_type = data.get("type", "info")
+    icon = data.get("icon", "")
+    title = data.get("title", "")
+    sub = data.get("sub", "")
+    notif_type = data.get("notif_type", "info")
+    record_event(event_type, icon, title, sub, notif_type)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/events/daily-first-login", methods=["GET"])
+def api_events_daily_first_login():
+    """Check and record daily first login. Returns {is_first: bool}."""
+    uid = session.get("user_id")
+    if not uid:
+        return jsonify({"error": "not logged in"}), 401
+
+    today = datetime.now(UTC8).strftime("%Y-%m-%d")
+    prev = _LAST_LOGIN_DATE.get(uid)
+
+    if prev != today:
+        _LAST_LOGIN_DATE[uid] = today
+        # Record first-login event in DB
+        record_event(
+            "daily_first_login",
+            "🌅",
+            f"早安，{session.get('username', '')}",
+            f"今日首次登录 · {datetime.now(UTC8).strftime('%Y/%m/%d')}",
+            "success"
+        )
+        return jsonify({"is_first": True, "date": today})
+
+    return jsonify({"is_first": False, "date": today})
+
+
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import psutil
     init_auth_db()
+    init_events_db()
     print(f"[Hermes Dashboard Backend] Starting on port 3801")
     print(f"  HERMES_HOME: {HERMES_HOME}")
     print(f"  DB: {DB_PATH}")
